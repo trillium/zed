@@ -18,6 +18,7 @@
 use gpui::{Hsla, SharedString};
 use multi_buffer::Anchor;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Unique identifier for a decoration type.
 ///
@@ -1174,5 +1175,861 @@ mod tests {
         DecorationRenderOptionsBuilder::before()
             .with_svg("test", 10.0, -10.0)
             .build();
+    }
+}
+
+/// In-memory storage system for managing decorations across editor instances.
+///
+/// The `DecorationRegistry` manages the lifecycle of decoration types and instances.
+/// It tracks which decorations belong to which editors and handles cleanup when
+/// editors close or decoration types are disposed.
+///
+/// # Design
+///
+/// - **Decoration Types**: Stored by `DecorationTypeId`, defining how decorations render
+/// - **Decoration Instances**: Stored per-editor, each referencing a decoration type
+/// - **Editor Separation**: Each editor's decorations are isolated by `EntityId`
+/// - **Thread Safety**: Uses `RwLock` for concurrent access from multiple threads
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use gpui::EntityId;
+/// use editor::decorations::{DecorationRegistry, DecorationRenderOptionsBuilder};
+/// use multi_buffer::Anchor;
+///
+/// let registry = DecorationRegistry::new();
+///
+/// // Create a decoration type for hats
+/// let hat_options = DecorationRenderOptionsBuilder::before()
+///     .with_svg("data:image/svg+xml;utf8,<svg></svg>", 12.0, 9.0)
+///     .build();
+/// let type_id = registry.create_decoration_type(hat_options);
+///
+/// // Add decorations to an editor
+/// let editor_id = EntityId::from(1);
+/// let anchor = Anchor::min();
+/// let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+/// registry.set_decorations(editor_id, type_id, vec![decoration]);
+///
+/// // Retrieve decorations
+/// let all_decorations = registry.get_decorations(editor_id);
+/// let type_decorations = registry.get_decorations_for_type(editor_id, type_id);
+///
+/// // Cleanup
+/// registry.clear_editor(editor_id);
+/// registry.dispose_decoration_type(type_id);
+/// ```
+use std::sync::{Arc, RwLock};
+use gpui::EntityId;
+
+/// Registry for managing decoration types and instances across editors.
+///
+/// This registry provides centralized storage for all decorations in the application.
+/// It uses interior mutability via `RwLock` to allow concurrent access.
+pub struct DecorationRegistry {
+    inner: Arc<RwLock<DecorationRegistryInner>>,
+}
+
+struct DecorationRegistryInner {
+    /// Storage for decoration type render options, indexed by type ID.
+    decoration_types: HashMap<DecorationTypeId, DecorationTypeData>,
+
+    /// Storage for decoration instances, indexed by editor ID.
+    /// Each editor maintains its own collection of decorations.
+    editor_decorations: HashMap<EntityId, EditorDecorations>,
+
+    /// Counter for generating unique decoration type IDs.
+    next_type_id: usize,
+}
+
+/// Metadata about a decoration type.
+struct DecorationTypeData {
+    /// The render options defining how this decoration type appears.
+    options: DecorationRenderOptions,
+
+    /// Reference count tracking how many decoration instances use this type.
+    /// When this reaches zero, the type can be safely disposed.
+    reference_count: usize,
+}
+
+/// All decorations for a single editor.
+struct EditorDecorations {
+    /// All decoration instances, indexed by decoration ID.
+    decorations: HashMap<DecorationId, Decoration>,
+
+    /// Index mapping type IDs to the set of decoration IDs using that type.
+    /// This allows efficient lookup of all decorations of a specific type.
+    decorations_by_type: HashMap<DecorationTypeId, HashSet<DecorationId>>,
+}
+
+impl DecorationRegistry {
+    /// Create a new empty decoration registry.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(DecorationRegistryInner {
+                decoration_types: HashMap::new(),
+                editor_decorations: HashMap::new(),
+                next_type_id: 1,
+            })),
+        }
+    }
+
+    /// Create a new decoration type with the given render options.
+    ///
+    /// Returns a unique `DecorationTypeId` that can be used to create decoration
+    /// instances of this type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let options = DecorationRenderOptionsBuilder::before()
+    ///     .with_text("→")
+    ///     .build();
+    /// let type_id = registry.create_decoration_type(options);
+    /// ```
+    pub fn create_decoration_type(&self, options: DecorationRenderOptions) -> DecorationTypeId {
+        let mut inner = self.inner.write().expect("registry lock poisoned");
+        let type_id = DecorationTypeId(inner.next_type_id);
+        inner.next_type_id += 1;
+
+        inner.decoration_types.insert(
+            type_id,
+            DecorationTypeData {
+                options,
+                reference_count: 0,
+            },
+        );
+
+        type_id
+    }
+
+    /// Get the render options for a decoration type.
+    ///
+    /// Returns `None` if the type ID doesn't exist.
+    pub fn get_decoration_type(&self, type_id: DecorationTypeId) -> Option<DecorationRenderOptions> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.decoration_types.get(&type_id).map(|data| data.options.clone())
+    }
+
+    /// Set the decorations for a specific type in an editor.
+    ///
+    /// This replaces any existing decorations of the given type in the editor.
+    /// The decorations are indexed by their IDs for efficient updates and removal.
+    ///
+    /// # Arguments
+    ///
+    /// * `editor_id` - The editor to add decorations to
+    /// * `type_id` - The decoration type (must have been created via `create_decoration_type`)
+    /// * `decorations` - Vector of decoration instances to add
+    ///
+    /// # Panics
+    ///
+    /// Panics if `type_id` doesn't exist in the registry.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let decorations = vec![
+    ///     Decoration::point(DecorationId(1), type_id, anchor1),
+    ///     Decoration::point(DecorationId(2), type_id, anchor2),
+    /// ];
+    /// registry.set_decorations(editor_id, type_id, decorations);
+    /// ```
+    pub fn set_decorations(
+        &self,
+        editor_id: EntityId,
+        type_id: DecorationTypeId,
+        decorations: Vec<Decoration>,
+    ) {
+        let mut inner = self.inner.write().expect("registry lock poisoned");
+
+        // Verify the type exists
+        let type_data = inner.decoration_types.get_mut(&type_id)
+            .expect("decoration type must exist before setting decorations");
+
+        // Get or create the editor's decoration storage
+        let editor_decorations = inner.editor_decorations
+            .entry(editor_id)
+            .or_insert_with(|| EditorDecorations {
+                decorations: HashMap::new(),
+                decorations_by_type: HashMap::new(),
+            });
+
+        // Remove old decorations of this type
+        if let Some(old_decoration_ids) = editor_decorations.decorations_by_type.get(&type_id) {
+            for old_id in old_decoration_ids {
+                editor_decorations.decorations.remove(old_id);
+                type_data.reference_count = type_data.reference_count.saturating_sub(1);
+            }
+        }
+
+        // Add new decorations
+        let mut decoration_ids = HashSet::new();
+        for decoration in decorations {
+            decoration_ids.insert(decoration.id);
+            editor_decorations.decorations.insert(decoration.id, decoration);
+            type_data.reference_count += 1;
+        }
+
+        // Update the type index
+        if decoration_ids.is_empty() {
+            editor_decorations.decorations_by_type.remove(&type_id);
+        } else {
+            editor_decorations.decorations_by_type.insert(type_id, decoration_ids);
+        }
+    }
+
+    /// Get all decorations for an editor.
+    ///
+    /// Returns an empty vector if the editor has no decorations.
+    pub fn get_decorations(&self, editor_id: EntityId) -> Vec<Decoration> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.editor_decorations
+            .get(&editor_id)
+            .map(|ed| ed.decorations.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all decorations of a specific type for an editor.
+    ///
+    /// Returns an empty vector if the editor has no decorations of this type.
+    pub fn get_decorations_for_type(
+        &self,
+        editor_id: EntityId,
+        type_id: DecorationTypeId,
+    ) -> Vec<Decoration> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.editor_decorations
+            .get(&editor_id)
+            .and_then(|ed| {
+                ed.decorations_by_type.get(&type_id).map(|decoration_ids| {
+                    decoration_ids
+                        .iter()
+                        .filter_map(|id| ed.decorations.get(id).cloned())
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// Remove a specific decoration type from the registry.
+    ///
+    /// This removes the type definition and all decoration instances using this type
+    /// across all editors.
+    ///
+    /// # Arguments
+    ///
+    /// * `type_id` - The decoration type to dispose
+    ///
+    /// # Returns
+    ///
+    /// `true` if the type was removed, `false` if it didn't exist.
+    pub fn dispose_decoration_type(&self, type_id: DecorationTypeId) -> bool {
+        let mut inner = self.inner.write().expect("registry lock poisoned");
+
+        // Remove the type definition
+        if inner.decoration_types.remove(&type_id).is_none() {
+            return false;
+        }
+
+        // Remove all decorations of this type from all editors
+        for editor_decorations in inner.editor_decorations.values_mut() {
+            if let Some(decoration_ids) = editor_decorations.decorations_by_type.remove(&type_id) {
+                for decoration_id in decoration_ids {
+                    editor_decorations.decorations.remove(&decoration_id);
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Clear all decorations for an editor.
+    ///
+    /// This is typically called when an editor is closed to free up resources.
+    /// It updates reference counts for all decoration types used by this editor.
+    ///
+    /// # Arguments
+    ///
+    /// * `editor_id` - The editor to clear decorations for
+    ///
+    /// # Returns
+    ///
+    /// The number of decorations that were removed.
+    pub fn clear_editor(&self, editor_id: EntityId) -> usize {
+        let mut inner = self.inner.write().expect("registry lock poisoned");
+
+        if let Some(editor_decorations) = inner.editor_decorations.remove(&editor_id) {
+            let decoration_count = editor_decorations.decorations.len();
+
+            // Update reference counts for all types used by this editor
+            for (type_id, decoration_ids) in editor_decorations.decorations_by_type {
+                if let Some(type_data) = inner.decoration_types.get_mut(&type_id) {
+                    type_data.reference_count = type_data.reference_count
+                        .saturating_sub(decoration_ids.len());
+                }
+            }
+
+            decoration_count
+        } else {
+            0
+        }
+    }
+
+    /// Get statistics about the registry state.
+    ///
+    /// Useful for debugging and monitoring memory usage.
+    pub fn stats(&self) -> DecorationRegistryStats {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        DecorationRegistryStats {
+            decoration_type_count: inner.decoration_types.len(),
+            editor_count: inner.editor_decorations.len(),
+            total_decoration_count: inner.editor_decorations
+                .values()
+                .map(|ed| ed.decorations.len())
+                .sum(),
+        }
+    }
+}
+
+impl Default for DecorationRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for DecorationRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// Statistics about the decoration registry state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecorationRegistryStats {
+    /// Number of decoration types registered.
+    pub decoration_type_count: usize,
+
+    /// Number of editors with decorations.
+    pub editor_count: usize,
+
+    /// Total number of decoration instances across all editors.
+    pub total_decoration_count: usize,
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    fn create_test_type() -> DecorationRenderOptions {
+        DecorationRenderOptionsBuilder::before()
+            .with_text("test")
+            .build()
+    }
+
+    fn create_test_anchor(offset: usize) -> Anchor {
+        // Create a simple anchor for testing
+        // In real usage, these would come from the buffer
+        Anchor::min()
+    }
+
+    #[test]
+    fn test_create_decoration_type() {
+        let registry = DecorationRegistry::new();
+        let options = create_test_type();
+
+        let type_id = registry.create_decoration_type(options.clone());
+
+        assert_eq!(type_id, DecorationTypeId(1));
+
+        let retrieved = registry.get_decoration_type(type_id);
+        assert_eq!(retrieved, Some(options));
+    }
+
+    #[test]
+    fn test_multiple_decoration_types() {
+        let registry = DecorationRegistry::new();
+
+        let type_id1 = registry.create_decoration_type(create_test_type());
+        let type_id2 = registry.create_decoration_type(create_test_type());
+        let type_id3 = registry.create_decoration_type(create_test_type());
+
+        assert_eq!(type_id1, DecorationTypeId(1));
+        assert_eq!(type_id2, DecorationTypeId(2));
+        assert_eq!(type_id3, DecorationTypeId(3));
+
+        assert!(registry.get_decoration_type(type_id1).is_some());
+        assert!(registry.get_decoration_type(type_id2).is_some());
+        assert!(registry.get_decoration_type(type_id3).is_some());
+    }
+
+    #[test]
+    fn test_get_nonexistent_type() {
+        let registry = DecorationRegistry::new();
+        let result = registry.get_decoration_type(DecorationTypeId(999));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_set_and_get_decorations() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        let decorations = vec![
+            Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+            Decoration::point(DecorationId(2), type_id, create_test_anchor(10)),
+        ];
+
+        registry.set_decorations(editor_id, type_id, decorations.clone());
+
+        let retrieved = registry.get_decorations(editor_id);
+        assert_eq!(retrieved.len(), 2);
+        assert!(retrieved.contains(&decorations[0]));
+        assert!(retrieved.contains(&decorations[1]));
+    }
+
+    #[test]
+    fn test_get_decorations_for_type() {
+        let registry = DecorationRegistry::new();
+        let type_id1 = registry.create_decoration_type(create_test_type());
+        let type_id2 = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        let decorations1 = vec![
+            Decoration::point(DecorationId(1), type_id1, create_test_anchor(0)),
+            Decoration::point(DecorationId(2), type_id1, create_test_anchor(10)),
+        ];
+
+        let decorations2 = vec![
+            Decoration::point(DecorationId(3), type_id2, create_test_anchor(20)),
+        ];
+
+        registry.set_decorations(editor_id, type_id1, decorations1.clone());
+        registry.set_decorations(editor_id, type_id2, decorations2.clone());
+
+        let retrieved1 = registry.get_decorations_for_type(editor_id, type_id1);
+        assert_eq!(retrieved1.len(), 2);
+
+        let retrieved2 = registry.get_decorations_for_type(editor_id, type_id2);
+        assert_eq!(retrieved2.len(), 1);
+
+        // Check total decorations
+        let all = registry.get_decorations(editor_id);
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_replace_decorations_of_type() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        // Set initial decorations
+        let decorations1 = vec![
+            Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+            Decoration::point(DecorationId(2), type_id, create_test_anchor(10)),
+        ];
+        registry.set_decorations(editor_id, type_id, decorations1);
+
+        // Replace with new decorations
+        let decorations2 = vec![
+            Decoration::point(DecorationId(3), type_id, create_test_anchor(20)),
+        ];
+        registry.set_decorations(editor_id, type_id, decorations2.clone());
+
+        let retrieved = registry.get_decorations_for_type(editor_id, type_id);
+        assert_eq!(retrieved.len(), 1);
+        assert_eq!(retrieved[0].id, DecorationId(3));
+    }
+
+    #[test]
+    fn test_multiple_editors_isolated() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id1 = EntityId::from(1);
+        let editor_id2 = EntityId::from(2);
+
+        let decorations1 = vec![
+            Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+        ];
+
+        let decorations2 = vec![
+            Decoration::point(DecorationId(2), type_id, create_test_anchor(10)),
+            Decoration::point(DecorationId(3), type_id, create_test_anchor(20)),
+        ];
+
+        registry.set_decorations(editor_id1, type_id, decorations1);
+        registry.set_decorations(editor_id2, type_id, decorations2);
+
+        let retrieved1 = registry.get_decorations(editor_id1);
+        let retrieved2 = registry.get_decorations(editor_id2);
+
+        assert_eq!(retrieved1.len(), 1);
+        assert_eq!(retrieved2.len(), 2);
+    }
+
+    #[test]
+    fn test_clear_editor() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        let decorations = vec![
+            Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+            Decoration::point(DecorationId(2), type_id, create_test_anchor(10)),
+        ];
+
+        registry.set_decorations(editor_id, type_id, decorations);
+
+        let removed_count = registry.clear_editor(editor_id);
+        assert_eq!(removed_count, 2);
+
+        let retrieved = registry.get_decorations(editor_id);
+        assert_eq!(retrieved.len(), 0);
+    }
+
+    #[test]
+    fn test_clear_nonexistent_editor() {
+        let registry = DecorationRegistry::new();
+        let editor_id = EntityId::from(999);
+
+        let removed_count = registry.clear_editor(editor_id);
+        assert_eq!(removed_count, 0);
+    }
+
+    #[test]
+    fn test_dispose_decoration_type() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        let decorations = vec![
+            Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+        ];
+
+        registry.set_decorations(editor_id, type_id, decorations);
+
+        let disposed = registry.dispose_decoration_type(type_id);
+        assert!(disposed);
+
+        // Type should be gone
+        assert!(registry.get_decoration_type(type_id).is_none());
+
+        // Decorations should be gone
+        let retrieved = registry.get_decorations(editor_id);
+        assert_eq!(retrieved.len(), 0);
+    }
+
+    #[test]
+    fn test_dispose_nonexistent_type() {
+        let registry = DecorationRegistry::new();
+        let disposed = registry.dispose_decoration_type(DecorationTypeId(999));
+        assert!(!disposed);
+    }
+
+    #[test]
+    fn test_dispose_type_affects_all_editors() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id1 = EntityId::from(1);
+        let editor_id2 = EntityId::from(2);
+
+        registry.set_decorations(
+            editor_id1,
+            type_id,
+            vec![Decoration::point(DecorationId(1), type_id, create_test_anchor(0))],
+        );
+
+        registry.set_decorations(
+            editor_id2,
+            type_id,
+            vec![Decoration::point(DecorationId(2), type_id, create_test_anchor(10))],
+        );
+
+        registry.dispose_decoration_type(type_id);
+
+        assert_eq!(registry.get_decorations(editor_id1).len(), 0);
+        assert_eq!(registry.get_decorations(editor_id2).len(), 0);
+    }
+
+    #[test]
+    fn test_reference_counting() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        // Add decorations
+        registry.set_decorations(
+            editor_id,
+            type_id,
+            vec![
+                Decoration::point(DecorationId(1), type_id, create_test_anchor(0)),
+                Decoration::point(DecorationId(2), type_id, create_test_anchor(10)),
+            ],
+        );
+
+        // Check reference count via internal state
+        let inner = registry.inner.read().expect("lock poisoned");
+        let type_data = inner.decoration_types.get(&type_id).unwrap();
+        assert_eq!(type_data.reference_count, 2);
+        drop(inner);
+
+        // Replace with fewer decorations
+        registry.set_decorations(
+            editor_id,
+            type_id,
+            vec![Decoration::point(DecorationId(3), type_id, create_test_anchor(20))],
+        );
+
+        let inner = registry.inner.read().expect("lock poisoned");
+        let type_data = inner.decoration_types.get(&type_id).unwrap();
+        assert_eq!(type_data.reference_count, 1);
+    }
+
+    #[test]
+    fn test_stats() {
+        let registry = DecorationRegistry::new();
+        let type_id1 = registry.create_decoration_type(create_test_type());
+        let type_id2 = registry.create_decoration_type(create_test_type());
+        let editor_id1 = EntityId::from(1);
+        let editor_id2 = EntityId::from(2);
+
+        registry.set_decorations(
+            editor_id1,
+            type_id1,
+            vec![
+                Decoration::point(DecorationId(1), type_id1, create_test_anchor(0)),
+                Decoration::point(DecorationId(2), type_id1, create_test_anchor(10)),
+            ],
+        );
+
+        registry.set_decorations(
+            editor_id2,
+            type_id2,
+            vec![Decoration::point(DecorationId(3), type_id2, create_test_anchor(20))],
+        );
+
+        let stats = registry.stats();
+        assert_eq!(stats.decoration_type_count, 2);
+        assert_eq!(stats.editor_count, 2);
+        assert_eq!(stats.total_decoration_count, 3);
+    }
+
+    #[test]
+    fn test_empty_decoration_set() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        // Set empty decorations
+        registry.set_decorations(editor_id, type_id, vec![]);
+
+        let retrieved = registry.get_decorations_for_type(editor_id, type_id);
+        assert_eq!(retrieved.len(), 0);
+
+        let all = registry.get_decorations(editor_id);
+        assert_eq!(all.len(), 0);
+    }
+
+    #[test]
+    fn test_range_decorations() {
+        let registry = DecorationRegistry::new();
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_background_color(Hsla::red())
+            .build();
+        let type_id = registry.create_decoration_type(options);
+        let editor_id = EntityId::from(1);
+
+        let decorations = vec![Decoration::range(
+            DecorationId(1),
+            type_id,
+            create_test_anchor(0),
+            create_test_anchor(10),
+        )];
+
+        registry.set_decorations(editor_id, type_id, decorations.clone());
+
+        let retrieved = registry.get_decorations(editor_id);
+        assert_eq!(retrieved.len(), 1);
+        assert!(retrieved[0].is_range());
+    }
+
+    #[test]
+    fn test_mixed_decoration_types() {
+        let registry = DecorationRegistry::new();
+        let type_id1 = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before().with_text("A").build(),
+        );
+        let type_id2 = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range().build(),
+        );
+        let editor_id = EntityId::from(1);
+
+        registry.set_decorations(
+            editor_id,
+            type_id1,
+            vec![Decoration::point(DecorationId(1), type_id1, create_test_anchor(0))],
+        );
+
+        registry.set_decorations(
+            editor_id,
+            type_id2,
+            vec![Decoration::range(
+                DecorationId(2),
+                type_id2,
+                create_test_anchor(0),
+                create_test_anchor(10),
+            )],
+        );
+
+        let all = registry.get_decorations(editor_id);
+        assert_eq!(all.len(), 2);
+
+        let point_decorations = registry.get_decorations_for_type(editor_id, type_id1);
+        assert_eq!(point_decorations.len(), 1);
+        assert!(point_decorations[0].is_point());
+
+        let range_decorations = registry.get_decorations_for_type(editor_id, type_id2);
+        assert_eq!(range_decorations.len(), 1);
+        assert!(range_decorations[0].is_range());
+    }
+
+    #[test]
+    fn test_clone_registry() {
+        let registry1 = DecorationRegistry::new();
+        let type_id = registry1.create_decoration_type(create_test_type());
+
+        let registry2 = registry1.clone();
+
+        // Both registries share the same underlying data
+        let options1 = registry1.get_decoration_type(type_id);
+        let options2 = registry2.get_decoration_type(type_id);
+        assert_eq!(options1, options2);
+
+        // Changes in one are visible in the other
+        let editor_id = EntityId::from(1);
+        registry1.set_decorations(
+            editor_id,
+            type_id,
+            vec![Decoration::point(DecorationId(1), type_id, create_test_anchor(0))],
+        );
+
+        let decorations = registry2.get_decorations(editor_id);
+        assert_eq!(decorations.len(), 1);
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let registry = DecorationRegistry::default();
+        let stats = registry.stats();
+        assert_eq!(stats.decoration_type_count, 0);
+        assert_eq!(stats.editor_count, 0);
+        assert_eq!(stats.total_decoration_count, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "decoration type must exist")]
+    fn test_set_decorations_invalid_type() {
+        let registry = DecorationRegistry::new();
+        let editor_id = EntityId::from(1);
+        let invalid_type_id = DecorationTypeId(999);
+
+        registry.set_decorations(
+            editor_id,
+            invalid_type_id,
+            vec![Decoration::point(
+                DecorationId(1),
+                invalid_type_id,
+                create_test_anchor(0),
+            )],
+        );
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::thread;
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+
+        // Clone registry for multiple threads
+        let registry1 = registry.clone();
+        let registry2 = registry.clone();
+
+        let handle1 = thread::spawn(move || {
+            for i in 0..10 {
+                let editor_id = EntityId::from(i);
+                registry1.set_decorations(
+                    editor_id,
+                    type_id,
+                    vec![Decoration::point(DecorationId(i), type_id, create_test_anchor(0))],
+                );
+            }
+        });
+
+        let handle2 = thread::spawn(move || {
+            for i in 10..20 {
+                let editor_id = EntityId::from(i);
+                registry2.set_decorations(
+                    editor_id,
+                    type_id,
+                    vec![Decoration::point(DecorationId(i), type_id, create_test_anchor(0))],
+                );
+            }
+        });
+
+        handle1.join().expect("thread 1 panicked");
+        handle2.join().expect("thread 2 panicked");
+
+        let stats = registry.stats();
+        assert_eq!(stats.editor_count, 20);
+        assert_eq!(stats.total_decoration_count, 20);
+    }
+
+    #[test]
+    fn test_large_number_of_decorations() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        // Create 1000 decorations
+        let decorations: Vec<_> = (0..1000)
+            .map(|i| Decoration::point(DecorationId(i), type_id, create_test_anchor(i)))
+            .collect();
+
+        registry.set_decorations(editor_id, type_id, decorations);
+
+        let retrieved = registry.get_decorations(editor_id);
+        assert_eq!(retrieved.len(), 1000);
+
+        let stats = registry.stats();
+        assert_eq!(stats.total_decoration_count, 1000);
+    }
+
+    #[test]
+    fn test_cleanup_memory() {
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(create_test_type());
+        let editor_id = EntityId::from(1);
+
+        // Add many decorations
+        let decorations: Vec<_> = (0..100)
+            .map(|i| Decoration::point(DecorationId(i), type_id, create_test_anchor(i)))
+            .collect();
+        registry.set_decorations(editor_id, type_id, decorations);
+
+        // Clear editor
+        registry.clear_editor(editor_id);
+
+        let stats = registry.stats();
+        assert_eq!(stats.editor_count, 0);
+        assert_eq!(stats.total_decoration_count, 0);
+
+        // Type should still exist
+        assert!(registry.get_decoration_type(type_id).is_some());
     }
 }
