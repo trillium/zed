@@ -372,7 +372,17 @@ impl DecorationRenderOptionsBuilder {
     }
 
     /// Set SVG content for the decoration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if width_px or height_px are not positive (> 0.0).
     pub fn with_svg(mut self, source: impl Into<SharedString>, width_px: f32, height_px: f32) -> Self {
+        assert!(
+            width_px > 0.0 && height_px > 0.0,
+            "SVG dimensions must be positive (width: {}, height: {})",
+            width_px,
+            height_px
+        );
         self.content = Some(DecorationContent::Svg {
             source: source.into(),
             width_px,
@@ -1103,5 +1113,37 @@ mod tests {
 
         assert_ne!(id1, id2);
         assert_eq!(id1, id3);
+    }
+
+    #[test]
+    #[should_panic(expected = "SVG dimensions must be positive")]
+    fn test_builder_rejects_zero_width() {
+        DecorationRenderOptionsBuilder::before()
+            .with_svg("test", 0.0, 10.0)
+            .build();
+    }
+
+    #[test]
+    #[should_panic(expected = "SVG dimensions must be positive")]
+    fn test_builder_rejects_zero_height() {
+        DecorationRenderOptionsBuilder::before()
+            .with_svg("test", 10.0, 0.0)
+            .build();
+    }
+
+    #[test]
+    #[should_panic(expected = "SVG dimensions must be positive")]
+    fn test_builder_rejects_negative_width() {
+        DecorationRenderOptionsBuilder::before()
+            .with_svg("test", -10.0, 10.0)
+            .build();
+    }
+
+    #[test]
+    #[should_panic(expected = "SVG dimensions must be positive")]
+    fn test_builder_rejects_negative_height() {
+        DecorationRenderOptionsBuilder::before()
+            .with_svg("test", 10.0, -10.0)
+            .build();
     }
 }
