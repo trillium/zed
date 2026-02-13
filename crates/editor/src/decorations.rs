@@ -458,3 +458,205 @@ impl DecorationRenderOptionsBuilder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decoration_type_id() {
+        let id1 = DecorationTypeId(1);
+        let id2 = DecorationTypeId(1);
+        let id3 = DecorationTypeId(2);
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_decoration_id() {
+        let id1 = DecorationId(1);
+        let id2 = DecorationId(1);
+        let id3 = DecorationId(2);
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_decoration_type_variants() {
+        let before = DecorationType::Before;
+        let after = DecorationType::After;
+        let range = DecorationType::Range;
+        let whole_line = DecorationType::WholeLine;
+
+        assert_ne!(before, after);
+        assert_ne!(range, whole_line);
+    }
+
+    #[test]
+    fn test_decoration_content_text() {
+        let content = DecorationContent::Text("test".into());
+        match content {
+            DecorationContent::Text(text) => assert_eq!(text.as_ref(), "test"),
+            _ => panic!("Expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn test_decoration_content_svg() {
+        let svg_source = "data:image/svg+xml;utf8,<svg></svg>";
+        let content = DecorationContent::Svg {
+            source: svg_source.into(),
+            width_px: 10.0,
+            height_px: 20.0,
+        };
+
+        match content {
+            DecorationContent::Svg {
+                source,
+                width_px,
+                height_px,
+            } => {
+                assert_eq!(source.as_ref(), svg_source);
+                assert_eq!(width_px, 10.0);
+                assert_eq!(height_px, 20.0);
+            }
+            _ => panic!("Expected Svg variant"),
+        }
+    }
+
+    #[test]
+    fn test_decoration_style_default() {
+        let style = DecorationStyle::default();
+        assert!(style.background_color.is_none());
+        assert!(style.border_color.is_none());
+        assert!(style.margin.is_none());
+    }
+
+    #[test]
+    fn test_themed_style_creation() {
+        let base = DecorationStyle::default();
+        let themed = ThemedDecorationStyle::new(base.clone());
+
+        assert_eq!(themed.base, base);
+        assert!(themed.light.is_none());
+        assert!(themed.dark.is_none());
+    }
+
+    #[test]
+    fn test_themed_style_with_variants() {
+        let base = DecorationStyle::default();
+        let mut light = DecorationStyle::default();
+        light.background_color = Some(Hsla::white());
+        let mut dark = DecorationStyle::default();
+        dark.background_color = Some(Hsla::black());
+
+        let themed = ThemedDecorationStyle::with_variants(base, light.clone(), dark.clone());
+
+        assert_eq!(themed.style_for_theme(true), &light);
+        assert_eq!(themed.style_for_theme(false), &dark);
+    }
+
+    #[test]
+    fn test_themed_style_fallback() {
+        let mut base = DecorationStyle::default();
+        base.background_color = Some(Hsla::white());
+        let themed = ThemedDecorationStyle::new(base.clone());
+
+        assert_eq!(themed.style_for_theme(true), &base);
+        assert_eq!(themed.style_for_theme(false), &base);
+    }
+
+    #[test]
+    fn test_range_behavior_default() {
+        let behavior = DecorationRangeBehavior::default();
+        assert_eq!(behavior, DecorationRangeBehavior::ClosedClosed);
+    }
+
+    #[test]
+    fn test_builder_before_decoration() {
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_text("test")
+            .with_margin("-10px 0 0 0")
+            .build();
+
+        assert_eq!(options.decoration_type, DecorationType::Before);
+        assert!(matches!(options.content, Some(DecorationContent::Text(_))));
+        assert_eq!(
+            options.style.base.margin,
+            Some("-10px 0 0 0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_builder_range_decoration() {
+        let color = Hsla::red();
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_background_color(color)
+            .build();
+
+        assert_eq!(options.decoration_type, DecorationType::Range);
+        assert_eq!(options.style.base.background_color, Some(color));
+    }
+
+    #[test]
+    fn test_builder_svg_decoration() {
+        let svg = "data:image/svg+xml;utf8,<svg></svg>";
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_svg(svg, 12.0, 9.0)
+            .with_margin("-9px -12px 0 0")
+            .build();
+
+        match options.content {
+            Some(DecorationContent::Svg {
+                source,
+                width_px,
+                height_px,
+            }) => {
+                assert_eq!(source.as_ref(), svg);
+                assert_eq!(width_px, 12.0);
+                assert_eq!(height_px, 9.0);
+            }
+            _ => panic!("Expected Svg content"),
+        }
+    }
+
+    #[test]
+    fn test_builder_with_border() {
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_border("#ff0000", "solid", "1px")
+            .with_border_radius("2px")
+            .build();
+
+        assert_eq!(options.style.base.border_color, Some("#ff0000".to_string()));
+        assert_eq!(options.style.base.border_style, Some("solid".to_string()));
+        assert_eq!(options.style.base.border_width, Some("1px".to_string()));
+        assert_eq!(options.style.base.border_radius, Some("2px".to_string()));
+    }
+
+    #[test]
+    fn test_builder_with_theme_variants() {
+        let mut light = DecorationStyle::default();
+        light.background_color = Some(Hsla::white());
+        let mut dark = DecorationStyle::default();
+        dark.background_color = Some(Hsla::black());
+
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_light_style(light.clone())
+            .with_dark_style(dark.clone())
+            .build();
+
+        assert_eq!(options.style.light, Some(light));
+        assert_eq!(options.style.dark, Some(dark));
+    }
+
+    #[test]
+    fn test_builder_z_index() {
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_z_index(100)
+            .build();
+
+        assert_eq!(options.style.base.z_index, Some(100));
+    }
+
+}
