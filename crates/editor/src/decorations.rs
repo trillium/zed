@@ -15,10 +15,9 @@
 //! - **Performant**: Efficient representation for thousands of decorations
 //! - **Buffer-aware**: Decorations track through text edits via anchors
 
-use gpui::Hsla;
+use gpui::{Hsla, SharedString};
 use multi_buffer::Anchor;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Unique identifier for a decoration type.
 ///
@@ -67,7 +66,7 @@ pub enum DecorationType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DecorationContent {
     /// Plain text content.
-    Text(Arc<str>),
+    Text(SharedString),
 
     /// SVG image from a data URI or file path.
     ///
@@ -77,7 +76,7 @@ pub enum DecorationContent {
     /// The SVG should be self-contained with embedded colors and dimensions.
     Svg {
         /// SVG source - either a data URI or file path
-        source: Arc<str>,
+        source: SharedString,
 
         /// Width in pixels (used for sizing and positioning)
         width_px: f32,
@@ -91,7 +90,7 @@ pub enum DecorationContent {
     /// Generic image support for PNG, JPG, etc. if needed beyond SVG.
     Image {
         /// Image source - either a data URI or file path
-        source: Arc<str>,
+        source: SharedString,
 
         /// Width in pixels
         width_px: f32,
@@ -367,13 +366,13 @@ impl DecorationRenderOptionsBuilder {
     }
 
     /// Set text content for the decoration.
-    pub fn with_text(mut self, text: impl Into<Arc<str>>) -> Self {
+    pub fn with_text(mut self, text: impl Into<SharedString>) -> Self {
         self.content = Some(DecorationContent::Text(text.into()));
         self
     }
 
     /// Set SVG content for the decoration.
-    pub fn with_svg(mut self, source: impl Into<Arc<str>>, width_px: f32, height_px: f32) -> Self {
+    pub fn with_svg(mut self, source: impl Into<SharedString>, width_px: f32, height_px: f32) -> Self {
         self.content = Some(DecorationContent::Svg {
             source: source.into(),
             width_px,
