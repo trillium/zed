@@ -16,6 +16,7 @@ pub mod blink_manager;
 mod bracket_colorization;
 mod clangd_ext;
 pub mod code_context_menus;
+pub mod decorations;
 pub mod display_map;
 mod document_colors;
 mod document_symbols;
