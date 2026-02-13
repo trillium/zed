@@ -659,4 +659,450 @@ mod tests {
         assert_eq!(options.style.base.z_index, Some(100));
     }
 
+    // Serialization tests - critical for extension communication
+
+    #[test]
+    fn test_serialize_decoration_type_id() {
+        let id = DecorationTypeId(42);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "42");
+
+        let deserialized: DecorationTypeId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_serialize_decoration_id() {
+        let id = DecorationId(123);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "123");
+
+        let deserialized: DecorationId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_serialize_decoration_type() {
+        let types = vec![
+            DecorationType::Before,
+            DecorationType::After,
+            DecorationType::Range,
+            DecorationType::WholeLine,
+        ];
+
+        for dt in types {
+            let json = serde_json::to_string(&dt).unwrap();
+            let deserialized: DecorationType = serde_json::from_str(&json).unwrap();
+            assert_eq!(dt, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_serialize_decoration_content_text() {
+        let content = DecorationContent::Text("hello world".into());
+        let json = serde_json::to_string(&content).unwrap();
+        let deserialized: DecorationContent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            DecorationContent::Text(text) => assert_eq!(text.as_ref(), "hello world"),
+            _ => panic!("Expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn test_serialize_decoration_content_svg() {
+        let content = DecorationContent::Svg {
+            source: "data:image/svg+xml;utf8,<svg></svg>".into(),
+            width_px: 12.0,
+            height_px: 9.0,
+        };
+
+        let json = serde_json::to_string(&content).unwrap();
+        let deserialized: DecorationContent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            DecorationContent::Svg {
+                source,
+                width_px,
+                height_px,
+            } => {
+                assert_eq!(source.as_ref(), "data:image/svg+xml;utf8,<svg></svg>");
+                assert_eq!(width_px, 12.0);
+                assert_eq!(height_px, 9.0);
+            }
+            _ => panic!("Expected Svg variant"),
+        }
+    }
+
+    #[test]
+    fn test_serialize_decoration_style() {
+        let mut style = DecorationStyle::default();
+        style.background_color = Some(Hsla::red());
+        style.margin = Some("-10px 0 0 0".to_string());
+        style.z_index = Some(5);
+
+        let json = serde_json::to_string(&style).unwrap();
+        let deserialized: DecorationStyle = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.background_color, Some(Hsla::red()));
+        assert_eq!(deserialized.margin, Some("-10px 0 0 0".to_string()));
+        assert_eq!(deserialized.z_index, Some(5));
+    }
+
+    #[test]
+    fn test_serialize_themed_decoration_style() {
+        let mut base = DecorationStyle::default();
+        base.background_color = Some(Hsla::white());
+
+        let mut light = DecorationStyle::default();
+        light.background_color = Some(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.9,
+            a: 1.0,
+        });
+
+        let mut dark = DecorationStyle::default();
+        dark.background_color = Some(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.1,
+            a: 1.0,
+        });
+
+        let themed = ThemedDecorationStyle::with_variants(base, light.clone(), dark.clone());
+
+        let json = serde_json::to_string(&themed).unwrap();
+        let deserialized: ThemedDecorationStyle = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.light, Some(light));
+        assert_eq!(deserialized.dark, Some(dark));
+    }
+
+    #[test]
+    fn test_serialize_range_behavior() {
+        let behaviors = vec![
+            DecorationRangeBehavior::OpenOpen,
+            DecorationRangeBehavior::OpenClosed,
+            DecorationRangeBehavior::ClosedOpen,
+            DecorationRangeBehavior::ClosedClosed,
+        ];
+
+        for behavior in behaviors {
+            let json = serde_json::to_string(&behavior).unwrap();
+            let deserialized: DecorationRangeBehavior = serde_json::from_str(&json).unwrap();
+            assert_eq!(behavior, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_serialize_decoration_render_options() {
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_svg("data:image/svg+xml;utf8,<svg></svg>", 12.0, 9.0)
+            .with_margin("-9px -12px 0 0")
+            .with_z_index(10)
+            .build();
+
+        let json = serde_json::to_string(&options).unwrap();
+        let deserialized: DecorationRenderOptions = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.decoration_type, DecorationType::Before);
+        assert!(matches!(
+            deserialized.content,
+            Some(DecorationContent::Svg { .. })
+        ));
+        assert_eq!(deserialized.style.base.margin, Some("-9px -12px 0 0".to_string()));
+        assert_eq!(deserialized.style.base.z_index, Some(10));
+    }
+
+    // Property tests - verify invariants and edge cases
+
+    #[test]
+    fn test_decoration_point_is_consistent() {
+        // Point decorations should never have an end anchor
+        let anchor = Anchor::min();
+        let decoration = Decoration::point(DecorationId(1), DecorationTypeId(1), anchor);
+
+        assert!(decoration.is_point());
+        assert!(!decoration.is_range());
+        assert!(decoration.end.is_none());
+    }
+
+    #[test]
+    fn test_decoration_range_is_consistent() {
+        // Range decorations should always have both start and end
+        let start = Anchor::min();
+        let end = Anchor::max();
+        let decoration =
+            Decoration::range(DecorationId(1), DecorationTypeId(1), start, end);
+
+        assert!(decoration.is_range());
+        assert!(!decoration.is_point());
+        assert!(decoration.end.is_some());
+    }
+
+    #[test]
+    fn test_themed_style_always_returns_valid_reference() {
+        // Themed styles should never panic when getting style for theme
+        let base = DecorationStyle::default();
+        let themed = ThemedDecorationStyle::new(base.clone());
+
+        let light_style = themed.style_for_theme(true);
+        let dark_style = themed.style_for_theme(false);
+
+        // Should return base when no theme-specific style exists
+        assert_eq!(light_style, &base);
+        assert_eq!(dark_style, &base);
+    }
+
+    #[test]
+    fn test_themed_style_prefers_theme_specific() {
+        let mut base = DecorationStyle::default();
+        base.background_color = Some(Hsla::white());
+
+        let mut light = DecorationStyle::default();
+        light.background_color = Some(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.9,
+            a: 1.0,
+        });
+
+        let mut dark = DecorationStyle::default();
+        dark.background_color = Some(Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.1,
+            a: 1.0,
+        });
+
+        let themed = ThemedDecorationStyle::with_variants(base, light.clone(), dark.clone());
+
+        // Should return theme-specific styles when available
+        assert_eq!(themed.style_for_theme(true), &light);
+        assert_eq!(themed.style_for_theme(false), &dark);
+    }
+
+    #[test]
+    fn test_builder_accumulates_properties() {
+        // Builder should accumulate all properties correctly
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_background_color(Hsla::red())
+            .with_border("#ff0000", "solid", "1px")
+            .with_border_radius("2px")
+            .with_z_index(5)
+            .build();
+
+        assert_eq!(options.style.base.background_color, Some(Hsla::red()));
+        assert_eq!(options.style.base.border_color, Some("#ff0000".to_string()));
+        assert_eq!(options.style.base.border_style, Some("solid".to_string()));
+        assert_eq!(options.style.base.border_width, Some("1px".to_string()));
+        assert_eq!(options.style.base.border_radius, Some("2px".to_string()));
+        assert_eq!(options.style.base.z_index, Some(5));
+    }
+
+    #[test]
+    fn test_builder_default_range_behavior() {
+        let options = DecorationRenderOptionsBuilder::before().build();
+        assert_eq!(options.range_behavior, DecorationRangeBehavior::ClosedClosed);
+    }
+
+    #[test]
+    fn test_builder_custom_range_behavior() {
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_range_behavior(DecorationRangeBehavior::OpenOpen)
+            .build();
+        assert_eq!(options.range_behavior, DecorationRangeBehavior::OpenOpen);
+    }
+
+    // Edge case tests
+
+    #[test]
+    fn test_empty_svg_source() {
+        let content = DecorationContent::Svg {
+            source: "".into(),
+            width_px: 0.0,
+            height_px: 0.0,
+        };
+
+        match content {
+            DecorationContent::Svg {
+                source,
+                width_px,
+                height_px,
+            } => {
+                assert_eq!(source.as_ref(), "");
+                assert_eq!(width_px, 0.0);
+                assert_eq!(height_px, 0.0);
+            }
+            _ => panic!("Expected Svg variant"),
+        }
+    }
+
+    #[test]
+    fn test_negative_dimensions() {
+        // Should handle negative dimensions without panicking
+        let content = DecorationContent::Svg {
+            source: "test".into(),
+            width_px: -10.0,
+            height_px: -20.0,
+        };
+
+        match content {
+            DecorationContent::Svg { width_px, height_px, .. } => {
+                assert_eq!(width_px, -10.0);
+                assert_eq!(height_px, -20.0);
+            }
+            _ => panic!("Expected Svg variant"),
+        }
+    }
+
+    #[test]
+    fn test_very_large_dimensions() {
+        let content = DecorationContent::Svg {
+            source: "test".into(),
+            width_px: f32::MAX,
+            height_px: f32::MAX,
+        };
+
+        match content {
+            DecorationContent::Svg { width_px, height_px, .. } => {
+                assert_eq!(width_px, f32::MAX);
+                assert_eq!(height_px, f32::MAX);
+            }
+            _ => panic!("Expected Svg variant"),
+        }
+    }
+
+    #[test]
+    fn test_border_style_single_value() {
+        let style = DecorationStyle {
+            border_style: Some("solid".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(style.border_style, Some("solid".to_string()));
+    }
+
+    #[test]
+    fn test_border_style_per_side() {
+        let style = DecorationStyle {
+            border_style: Some("solid dashed dashed solid".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            style.border_style,
+            Some("solid dashed dashed solid".to_string())
+        );
+    }
+
+    #[test]
+    fn test_margin_formats() {
+        let styles = vec![
+            "-10px 0 0 0",
+            "-10px",
+            "-10px -5px",
+            "0",
+        ];
+
+        for margin_str in styles {
+            let style = DecorationStyle {
+                margin: Some(margin_str.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(style.margin, Some(margin_str.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_cursorless_hat_example() {
+        // Example: Blue hat with default shape positioned above character
+        let hat_svg = "data:image/svg+xml;utf8,<svg width=\"1em\" height=\"1em\" viewBox=\"0 0 12 9\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M6 9C9.31371 9 12 6.98528 12 4.5C12 2.01472 9.31371 0 6 0C2.68629 0 0 2.01472 0 4.5C0 6.98528 2.68629 9 6 9Z\" fill=\"#0000ff\"/></svg>";
+
+        let options = DecorationRenderOptionsBuilder::before()
+            .with_svg(hat_svg, 12.0, 9.0)
+            .with_margin("-9px -12px 0 0")
+            .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
+            .build();
+
+        assert_eq!(options.decoration_type, DecorationType::Before);
+        assert!(matches!(
+            options.content,
+            Some(DecorationContent::Svg { .. })
+        ));
+        assert_eq!(options.style.base.margin, Some("-9px -12px 0 0".to_string()));
+        assert_eq!(options.range_behavior, DecorationRangeBehavior::ClosedClosed);
+    }
+
+    #[test]
+    fn test_cursorless_flash_highlight_example() {
+        // Example: Red background for pending delete
+        let pending_delete_color = Hsla {
+            h: 0.0,       // Red hue
+            s: 1.0,       // Full saturation
+            l: 0.5,       // Medium lightness
+            a: 0.54,      // ~54% opacity (0x8a / 255)
+        };
+
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_background_color(pending_delete_color)
+            .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
+            .build();
+
+        assert_eq!(options.decoration_type, DecorationType::Range);
+        assert_eq!(options.style.base.background_color, Some(pending_delete_color));
+    }
+
+    #[test]
+    fn test_cursorless_scope_visualizer_example() {
+        // Example: Top line of a multi-line scope
+        let options = DecorationRenderOptionsBuilder::range()
+            .with_border(
+                "#010002c0 #010001c0 #010001c0 #010002c0",
+                "solid dashed dashed solid",
+                "1px",
+            )
+            .with_border_radius("2px 0px 0px 0px")
+            .build();
+
+        assert_eq!(options.decoration_type, DecorationType::Range);
+        assert_eq!(
+            options.style.base.border_color,
+            Some("#010002c0 #010001c0 #010001c0 #010002c0".to_string())
+        );
+        assert_eq!(
+            options.style.base.border_style,
+            Some("solid dashed dashed solid".to_string())
+        );
+        assert_eq!(options.style.base.border_width, Some("1px".to_string()));
+        assert_eq!(
+            options.style.base.border_radius,
+            Some("2px 0px 0px 0px".to_string())
+        );
+    }
+
+    #[test]
+    fn test_multiple_decorations_same_type() {
+        // Multiple decoration instances can share the same type
+        let type_id = DecorationTypeId(1);
+        let anchor1 = Anchor::min();
+        let anchor2 = Anchor::max();
+
+        let dec1 = Decoration::point(DecorationId(1), type_id, anchor1);
+        let dec2 = Decoration::point(DecorationId(2), type_id, anchor2);
+
+        assert_eq!(dec1.type_id, dec2.type_id);
+        assert_ne!(dec1.id, dec2.id);
+    }
+
+    #[test]
+    fn test_decoration_ids_are_unique() {
+        let id1 = DecorationId(1);
+        let id2 = DecorationId(2);
+        let id3 = DecorationId(1);
+
+        assert_ne!(id1, id2);
+        assert_eq!(id1, id3);
+    }
 }
