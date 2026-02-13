@@ -191,6 +191,21 @@ struct RenderBlocksOutput {
     resized_blocks: Option<HashMap<CustomBlockId, u32>>,
 }
 
+/// A decoration positioned and ready for rendering
+#[derive(Debug)]
+struct LayoutDecoration {
+    /// The decoration ID
+    id: crate::DecorationId,
+    /// The decoration type ID
+    type_id: crate::DecorationTypeId,
+    /// Position in display coordinates
+    position: DisplayPoint,
+    /// Optional end position for range decorations
+    end_position: Option<DisplayPoint>,
+    /// Decoration render options (content, style, etc.)
+    options: crate::DecorationRenderOptions,
+}
+
 pub struct EditorElement {
     editor: Entity<Editor>,
     style: EditorStyle,
@@ -5641,6 +5656,63 @@ impl EditorElement {
         (controls, control_bounds)
     }
 
+    fn layout_decorations(
+        &self,
+        snapshot: &EditorSnapshot,
+        start_row: DisplayRow,
+        end_row: DisplayRow,
+        cx: &App,
+    ) -> Vec<LayoutDecoration> {
+        let mut decorations = Vec::new();
+
+        // Get the editor entity ID
+        let editor_id = self.editor.entity_id();
+
+        // Get all decorations for this editor from the registry
+        self.editor.read(cx).decoration_registry.get_decorations_owned(editor_id)
+            .into_iter()
+            .for_each(|decoration| {
+                // Convert anchors to display points
+                let display_snapshot = &snapshot.display_snapshot;
+                let start_point = decoration.start.to_display_point(display_snapshot);
+
+                // Skip decorations outside the visible range
+                if start_point.row() < start_row || start_point.row() >= end_row {
+                    return;
+                }
+
+                let end_point = decoration.end.as_ref()
+                    .map(|anchor| anchor.to_display_point(display_snapshot));
+
+                // Get decoration options from the registry
+                if let Some(options) = self.editor.read(cx)
+                    .decoration_registry
+                    .get_decoration_type(decoration.type_id)
+                {
+                    decorations.push(LayoutDecoration {
+                        id: decoration.id,
+                        type_id: decoration.type_id,
+                        position: start_point,
+                        end_position: end_point,
+                        options,
+                    });
+                }
+            });
+
+        // Sort decorations by position and z-index for proper rendering order
+        decorations.sort_by(|a, b| {
+            let z_index_a = a.options.style.base.z_index.unwrap_or(0);
+            let z_index_b = b.options.style.base.z_index.unwrap_or(0);
+
+            // First sort by row, then by column, then by z-index
+            a.position.row().cmp(&b.position.row())
+                .then(a.position.column().cmp(&b.position.column()))
+                .then(z_index_a.cmp(&z_index_b))
+        });
+
+        decorations
+    }
+
     fn layout_signature_help(
         &self,
         hitbox: &Hitbox,
@@ -6450,6 +6522,7 @@ impl EditorElement {
                 self.paint_lines(&invisible_display_ranges, layout, window, cx);
                 self.paint_redactions(layout, window);
                 self.paint_cursors(layout, window, cx);
+                self.paint_decorations(layout, window, cx);
                 self.paint_inline_diagnostics(layout, window, cx);
                 self.paint_inline_blame(layout, window, cx);
                 self.paint_inline_code_actions(layout, window, cx);
@@ -6709,6 +6782,84 @@ impl EditorElement {
     fn paint_cursors(&mut self, layout: &mut EditorLayout, window: &mut Window, cx: &mut App) {
         for cursor in &mut layout.visible_cursors {
             cursor.paint(layout.content_origin, window, cx);
+        }
+    }
+
+    fn paint_decorations(&mut self, layout: &EditorLayout, window: &mut Window, cx: &App) {
+        use crate::{DecorationType, DecorationContent};
+
+        let is_light_theme = cx.theme().appearance == Appearance::Light;
+        let line_height = layout.position_map.line_height;
+        let em_advance = layout.position_map.em_advance;
+
+        for decoration in &layout.decorations {
+            let style = decoration.options.style.style_for_theme(is_light_theme);
+
+            match decoration.options.decoration_type {
+                DecorationType::Before | DecorationType::After => {
+                    // For now, just render text content decorations
+                    // SVG rendering will be added in a follow-up
+                    if let Some(DecorationContent::Text(ref text)) = decoration.options.content {
+                        let row = decoration.position.row();
+                        let column = decoration.position.column();
+
+                        // Calculate pixel position
+                        let y = layout.content_origin.y
+                            + (row.as_f64() - layout.position_map.scroll_position.y) as f32
+                                * line_height;
+                        let x = layout.content_origin.x
+                            + (column as f32) * em_advance
+                            - layout.position_map.scroll_pixel_position.x;
+
+                        // Render the text
+                        let color = style.background_color.unwrap_or(cx.theme().colors().text);
+                        let text_runs = vec![TextRun {
+                            len: text.len(),
+                            font: self.style.text.font(),
+                            color,
+                            background_color: None,
+                            underline: Default::default(),
+                            strikethrough: Default::default(),
+                        }];
+
+                        if let Ok(shaped_line) = window.text_system().shape_line(
+                            text.clone(),
+                            self.style.text.font_size,
+                            &text_runs,
+                            None,
+                        ) {
+                            let _ = shaped_line.paint(
+                                gpui::point(x, y),
+                                line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                }
+                DecorationType::Range | DecorationType::WholeLine => {
+                    // Render background highlights for range decorations
+                    if let (Some(end_position), Some(background_color)) =
+                        (decoration.end_position, style.background_color)
+                    {
+                        let start = decoration.position;
+                        let end = end_position;
+
+                        // Paint the highlighted range
+                        self.paint_highlighted_range(
+                            start..end,
+                            true,
+                            background_color,
+                            px(0.0),
+                            px(0.0),
+                            layout,
+                            window,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -10798,6 +10949,9 @@ impl Element for EditorElement {
                         editor.last_position_map = Some(position_map.clone())
                     });
 
+                    // Layout decorations for the visible range
+                    let decorations = self.layout_decorations(&snapshot, start_row, end_row, cx);
+
                     EditorLayout {
                         mode,
                         position_map,
@@ -10841,6 +10995,7 @@ impl Element for EditorElement {
                         expand_toggles,
                         text_align: self.style.text.text_align,
                         content_width: text_hitbox.size.width,
+                        decorations,
                     }
                 })
             })
@@ -11024,6 +11179,8 @@ pub struct EditorLayout {
     document_colors: Option<(DocumentColorsRenderMode, Vec<(Range<DisplayPoint>, Hsla)>)>,
     text_align: TextAlign,
     content_width: Pixels,
+    /// Decorations for the visible range (before/after content, range highlights, etc.)
+    decorations: Vec<LayoutDecoration>,
 }
 
 struct StickyHeaders {

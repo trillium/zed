@@ -1361,6 +1361,8 @@ pub struct Editor {
     outline_symbols_at_cursor: Option<(BufferId, Vec<OutlineItem<Anchor>>)>,
     sticky_headers_task: Task<()>,
     sticky_headers: Option<Vec<OutlineItem<Anchor>>>,
+    /// Registry for managing decorations (hat overlays, range highlights, etc.)
+    pub decoration_registry: DecorationRegistry,
 }
 
 #[derive(Debug, PartialEq)]
@@ -2612,6 +2614,7 @@ impl Editor {
             outline_symbols_at_cursor: None,
             sticky_headers_task: Task::ready(()),
             sticky_headers: None,
+            decoration_registry: DecorationRegistry::new(),
         };
 
         if is_minimap {
