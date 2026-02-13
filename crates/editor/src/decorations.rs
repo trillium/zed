@@ -824,6 +824,35 @@ mod tests {
         assert_eq!(deserialized.style.base.z_index, Some(10));
     }
 
+    #[test]
+    fn test_serialize_decoration_point() {
+        let anchor = Anchor::min();
+        let decoration = Decoration::point(DecorationId(42), DecorationTypeId(1), anchor);
+
+        let json = serde_json::to_string(&decoration).unwrap();
+        let deserialized: Decoration = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, DecorationId(42));
+        assert_eq!(deserialized.type_id, DecorationTypeId(1));
+        assert!(deserialized.is_point());
+        assert!(!deserialized.is_range());
+    }
+
+    #[test]
+    fn test_serialize_decoration_range() {
+        let start = Anchor::min();
+        let end = Anchor::max();
+        let decoration = Decoration::range(DecorationId(100), DecorationTypeId(5), start, end);
+
+        let json = serde_json::to_string(&decoration).unwrap();
+        let deserialized: Decoration = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, DecorationId(100));
+        assert_eq!(deserialized.type_id, DecorationTypeId(5));
+        assert!(deserialized.is_range());
+        assert!(!deserialized.is_point());
+    }
+
     // Property tests - verify invariants and edge cases
 
     #[test]
