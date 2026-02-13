@@ -55,6 +55,11 @@ mod signature_help;
 pub mod test;
 
 pub(crate) use actions::*;
+pub use decorations::{
+    Decoration, DecorationContent, DecorationId, DecorationRangeBehavior, DecorationRenderOptions,
+    DecorationRenderOptionsBuilder, DecorationStyle, DecorationType, DecorationTypeId,
+    ThemedDecorationStyle,
+};
 pub use display_map::{
     ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey,
     SemanticTokenHighlight,
