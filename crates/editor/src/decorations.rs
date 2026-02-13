@@ -266,7 +266,7 @@ impl Default for DecorationRangeBehavior {
 ///
 /// Each decoration tracks a position or range in the buffer using anchors,
 /// which automatically update as the buffer is edited.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decoration {
     /// Unique identifier for this decoration instance.
     pub id: DecorationId,
