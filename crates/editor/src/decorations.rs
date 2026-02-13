@@ -1383,7 +1383,25 @@ impl DecorationRegistry {
     /// Get all decorations for an editor.
     ///
     /// Returns an empty vector if the editor has no decorations.
-    pub fn get_decorations(&self, editor_id: EntityId) -> Vec<Decoration> {
+    ///
+    /// # Note
+    ///
+    /// This method returns `Vec<&Decoration>` instead of cloning decorations
+    /// to avoid unnecessary allocations. For most use cases, this is more efficient
+    /// than `get_decorations_owned()`.
+    pub fn get_decorations(&self, editor_id: EntityId) -> Vec<&Decoration> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.editor_decorations
+            .get(&editor_id)
+            .map(|ed| ed.decorations.values().collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all decorations for an editor (owned).
+    ///
+    /// Returns owned copies of decorations. Use `get_decorations()` if you only
+    /// need to read decoration data.
+    pub fn get_decorations_owned(&self, editor_id: EntityId) -> Vec<Decoration> {
         let inner = self.inner.read().expect("registry lock poisoned");
         inner.editor_decorations
             .get(&editor_id)
@@ -1394,7 +1412,36 @@ impl DecorationRegistry {
     /// Get all decorations of a specific type for an editor.
     ///
     /// Returns an empty vector if the editor has no decorations of this type.
+    ///
+    /// # Note
+    ///
+    /// This method returns `Vec<&Decoration>` instead of cloning decorations
+    /// to avoid unnecessary allocations. For most use cases, this is more efficient
+    /// than `get_decorations_for_type_owned()`.
     pub fn get_decorations_for_type(
+        &self,
+        editor_id: EntityId,
+        type_id: DecorationTypeId,
+    ) -> Vec<&Decoration> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.editor_decorations
+            .get(&editor_id)
+            .and_then(|ed| {
+                ed.decorations_by_type.get(&type_id).map(|decoration_ids| {
+                    decoration_ids
+                        .iter()
+                        .filter_map(|id| ed.decorations.get(id))
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all decorations of a specific type for an editor (owned).
+    ///
+    /// Returns owned copies of decorations. Use `get_decorations_for_type()` if you only
+    /// need to read decoration data.
+    pub fn get_decorations_for_type_owned(
         &self,
         editor_id: EntityId,
         type_id: DecorationTypeId,
@@ -1530,7 +1577,7 @@ mod registry_tests {
             .build()
     }
 
-    fn create_test_anchor(offset: usize) -> Anchor {
+    fn create_test_anchor(_offset: usize) -> Anchor {
         // Create a simple anchor for testing
         // In real usage, these would come from the buffer
         Anchor::min()
@@ -1588,8 +1635,8 @@ mod registry_tests {
 
         let retrieved = registry.get_decorations(editor_id);
         assert_eq!(retrieved.len(), 2);
-        assert!(retrieved.contains(&decorations[0]));
-        assert!(retrieved.contains(&decorations[1]));
+        assert!(retrieved.iter().any(|d| *d == &decorations[0]));
+        assert!(retrieved.iter().any(|d| *d == &decorations[1]));
     }
 
     #[test]
@@ -2031,5 +2078,228 @@ mod registry_tests {
 
         // Type should still exist
         assert!(registry.get_decoration_type(type_id).is_some());
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod integration_tests {
+    use super::*;
+    use crate::Editor;
+    use gpui::{TestAppContext, Entity};
+    use language::Buffer;
+    use multi_buffer::MultiBuffer;
+    use text::ToPoint;
+
+    #[gpui::test]
+    async fn test_decoration_with_real_buffer_anchor(cx: &mut TestAppContext) {
+        // Test creating a decoration with a real buffer anchor from a real Editor
+        let buffer = cx.new(|cx| Buffer::local("Hello, World!", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..13].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Create an anchor at position 7 (the 'W' in "World")
+            let point = buffer_snapshot.offset_to_point(7);
+            let anchor = buffer_snapshot.anchor_at(point, text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        // Create decoration registry and type
+        let registry = DecorationRegistry::new();
+        let hat_type = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("^")
+                .build()
+        );
+
+        // Add decoration at the anchor
+        let decoration = Decoration::point(DecorationId(1), hat_type, anchor);
+        registry.set_decorations(editor_id, hat_type, vec![decoration]);
+
+        // Verify decoration was added
+        let decorations = registry.get_decorations(editor_id);
+        assert_eq!(decorations.len(), 1);
+        assert_eq!(decorations[0].id, DecorationId(1));
+        assert!(decorations[0].is_point());
+
+        // Verify anchor is at the correct position
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+            assert_eq!(dec_point, 0.point(7));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_survives_buffer_edits(cx: &mut TestAppContext) {
+        // Test that decoration anchors correctly track through buffer edits
+        let buffer = cx.new(|cx| Buffer::local("abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..10].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        // Create anchor at position 5 ('f')
+        let (editor_id, anchor_before_edit) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let point = buffer_snapshot.offset_to_point(5);
+            let anchor = buffer_snapshot.anchor_at(point, text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        // Create decoration registry and add decoration
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::red())
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor_before_edit);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 2 (before the anchor)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([2..2]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        // Verify anchor moved correctly
+        let decorations = registry.get_decorations(editor_id);
+        assert_eq!(decorations.len(), 1);
+
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+            // Anchor should now be at position 8 (original 5 + 3 inserted chars)
+            assert_eq!(dec_point, 0.point(8));
+
+            // Verify buffer content
+            let text = buffer_snapshot.text();
+            assert_eq!(text, "abXXXcdefghij");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_multiple_editors_with_real_entities(cx: &mut TestAppContext) {
+        // Test decorations with multiple real editor entities
+        let buffer1 = cx.new(|cx| Buffer::local("Editor 1 content", cx));
+        let buffer2 = cx.new(|cx| Buffer::local("Editor 2 content", cx));
+
+        let multibuffer1 = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer1,
+                [0..16].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let multibuffer2 = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer2,
+                [0..16].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor1 = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer1.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let editor2 = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer2.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        // Create anchors for both editors
+        let (editor1_id, anchor1) = editor1.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let anchor = buffer_snapshot.anchor_at(0.point(7), text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let (editor2_id, anchor2) = editor2.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let anchor = buffer_snapshot.anchor_at(0.point(7), text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        // Create shared decoration registry and types
+        let registry = DecorationRegistry::new();
+        let hat_type = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("^")
+                .build()
+        );
+        let highlight_type = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .build()
+        );
+
+        // Add decorations to both editors
+        registry.set_decorations(
+            editor1_id,
+            hat_type,
+            vec![Decoration::point(DecorationId(1), hat_type, anchor1)]
+        );
+
+        registry.set_decorations(
+            editor2_id,
+            highlight_type,
+            vec![Decoration::point(DecorationId(2), highlight_type, anchor2)]
+        );
+
+        // Verify isolation - editor1 should only have its decorations
+        let editor1_decs = registry.get_decorations(editor1_id);
+        assert_eq!(editor1_decs.len(), 1);
+        assert_eq!(editor1_decs[0].id, DecorationId(1));
+        assert_eq!(editor1_decs[0].type_id, hat_type);
+
+        // Verify isolation - editor2 should only have its decorations
+        let editor2_decs = registry.get_decorations(editor2_id);
+        assert_eq!(editor2_decs.len(), 1);
+        assert_eq!(editor2_decs[0].id, DecorationId(2));
+        assert_eq!(editor2_decs[0].type_id, highlight_type);
+
+        // Verify total stats
+        let stats = registry.stats();
+        assert_eq!(stats.editor_count, 2);
+        assert_eq!(stats.decoration_type_count, 2);
+        assert_eq!(stats.total_decoration_count, 2);
     }
 }
