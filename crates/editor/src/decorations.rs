@@ -294,6 +294,36 @@ impl Default for DecorationRangeBehavior {
     }
 }
 
+impl DecorationRangeBehavior {
+    /// Convert range behavior to anchor biases for start and end positions.
+    ///
+    /// Returns (start_bias, end_bias) tuple:
+    /// - Left bias means the anchor doesn't move when text is inserted at that position
+    /// - Right bias means the anchor moves forward when text is inserted at that position
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use editor::decorations::DecorationRangeBehavior;
+    /// use text::Bias;
+    ///
+    /// let (start, end) = DecorationRangeBehavior::ClosedClosed.to_bias();
+    /// assert_eq!(start, Bias::Left);
+    /// assert_eq!(end, Bias::Left);
+    /// ```
+    pub fn to_bias(self) -> (text::Bias, text::Bias) {
+        use text::Bias;
+        match self {
+            // Closed means the boundary doesn't expand (Left bias)
+            // Open means the boundary expands (Right bias)
+            DecorationRangeBehavior::ClosedClosed => (Bias::Left, Bias::Left),
+            DecorationRangeBehavior::OpenOpen => (Bias::Right, Bias::Right),
+            DecorationRangeBehavior::ClosedOpen => (Bias::Left, Bias::Right),
+            DecorationRangeBehavior::OpenClosed => (Bias::Right, Bias::Left),
+        }
+    }
+}
+
 /// A decoration instance applied to the editor.
 ///
 /// Each decoration tracks a position or range in the buffer using anchors,
@@ -1548,6 +1578,33 @@ impl DecorationRegistry {
         true
     }
 
+    /// Get the range behavior for a decoration type.
+    ///
+    /// This is useful when creating anchors for decorations - you can use the
+    /// returned behavior's `to_bias()` method to determine the correct bias
+    /// for start and end anchors.
+    ///
+    /// # Arguments
+    ///
+    /// * `type_id` - The decoration type to query
+    ///
+    /// # Returns
+    ///
+    /// The range behavior for this type, or None if the type doesn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let behavior = registry.get_range_behavior(type_id)?;
+    /// let (start_bias, end_bias) = behavior.to_bias();
+    /// let start = buffer_snapshot.anchor_at(start_point, start_bias);
+    /// let end = buffer_snapshot.anchor_at(end_point, end_bias);
+    /// ```
+    pub fn get_range_behavior(&self, type_id: DecorationTypeId) -> Option<DecorationRangeBehavior> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.decoration_types.get(&type_id).map(|type_data| type_data.options.range_behavior)
+    }
+
     /// Clear all decorations for an editor.
     ///
     /// This is typically called when an editor is closed to free up resources.
@@ -2393,20 +2450,23 @@ mod integration_tests {
             editor
         });
 
-        // Create range decoration spanning "line2" (positions 6-11)
-        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(6), sum_tree::Bias::Left);
-            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(11), sum_tree::Bias::Left);
-            (cx.entity_id(), start, end)
-        });
-
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
             DecorationRenderOptionsBuilder::range()
                 .with_background_color(Hsla::blue())
                 .build()
         );
+
+        // Create range decoration spanning "line2" (positions 6-11)
+        // Use the range behavior from the decoration type to determine anchor bias
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(6), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(11), end_bias);
+            (cx.entity_id(), start, end)
+        });
 
         let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
         registry.set_decorations(editor_id, type_id, vec![decoration]);
@@ -2828,5 +2888,254 @@ mod integration_tests {
         assert_eq!(stats.editor_count, 2);
         assert_eq!(stats.decoration_type_count, 2);
         assert_eq!(stats.total_decoration_count, 2);
+    }
+
+    #[gpui::test]
+    async fn test_decoration_deletion_encompasses_point(cx: &mut TestAppContext) {
+        // Test that a point decoration handles deletion that encompasses it
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdef", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..16].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let anchor = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("^")
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Delete range [5..15] that encompasses the decoration at position 10
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([5..15]);
+            });
+            editor.delete(window, cx);
+        });
+
+        // Verify the anchor is still valid and collapsed to deletion boundary
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+
+            // Anchor should collapse to the start of the deletion (position 5)
+            assert_eq!(dec_point, 0.point(5));
+            assert!(decorations[0].start.is_valid(&buffer_snapshot));
+            assert_eq!(buffer_snapshot.text(), "01234abcdef");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_deletion_encompasses_range_start(cx: &mut TestAppContext) {
+        // Test deletion that overlaps the start of a range decoration
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .build()
+        );
+
+        // Create decoration spanning [10..20]
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Delete range [5..15] that overlaps the start of the decoration
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([5..15]);
+            });
+            editor.delete(window, cx);
+        });
+
+        // Verify the decoration adjusts correctly
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start should collapse to deletion boundary (5), end should shift back by 10
+            assert_eq!(start_point, 0.point(5));
+            assert_eq!(end_point, 0.point(10)); // 20 - 10 = 10
+            assert!(decorations[0].start.is_valid(&buffer_snapshot));
+            assert!(decorations[0].end.as_ref().unwrap().is_valid(&buffer_snapshot));
+            assert_eq!(buffer_snapshot.text(), "01234abcdefghij");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_deletion_encompasses_range_end(cx: &mut TestAppContext) {
+        // Test deletion that overlaps the end of a range decoration
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .build()
+        );
+
+        // Create decoration spanning [5..15]
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(5), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(15), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Delete range [10..20] that overlaps the end of the decoration
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([10..20]);
+            });
+            editor.delete(window, cx);
+        });
+
+        // Verify the decoration adjusts correctly
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start stays at 5, end should collapse to deletion boundary (10)
+            assert_eq!(start_point, 0.point(5));
+            assert_eq!(end_point, 0.point(10));
+            assert!(decorations[0].start.is_valid(&buffer_snapshot));
+            assert!(decorations[0].end.as_ref().unwrap().is_valid(&buffer_snapshot));
+            assert_eq!(buffer_snapshot.text(), "0123456789");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_deletion_encompasses_entire_range(cx: &mut TestAppContext) {
+        // Test deletion that completely encompasses a range decoration
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .build()
+        );
+
+        // Create decoration spanning [10..15]
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(15), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Delete range [5..18] that completely encompasses the decoration
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([5..18]);
+            });
+            editor.delete(window, cx);
+        });
+
+        // Verify both anchors collapse to the deletion boundary
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Both anchors should collapse to the start of deletion (position 5)
+            assert_eq!(start_point, 0.point(5));
+            assert_eq!(end_point, 0.point(5));
+            assert!(decorations[0].start.is_valid(&buffer_snapshot));
+            assert!(decorations[0].end.as_ref().unwrap().is_valid(&buffer_snapshot));
+            assert_eq!(buffer_snapshot.text(), "01234ij");
+        });
     }
 }
