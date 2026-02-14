@@ -77,11 +77,6 @@ pub enum DecorationType {
     /// characters using negative margins to create visual overlays.
     Before,
 
-    /// Content rendered after a character position.
-    ///
-    /// Could be used for inline annotations or trailing decorations.
-    After,
-
     /// Highlight applied to a range of text.
     ///
     /// Used for temporary flash effects (delete preview, copy feedback) and
@@ -115,20 +110,6 @@ pub enum DecorationContent {
         width_px: f32,
 
         /// Height in pixels (used for sizing and positioning)
-        height_px: f32,
-    },
-
-    /// Image from a file path or data URI.
-    ///
-    /// Generic image support for PNG, JPG, etc. if needed beyond SVG.
-    Image {
-        /// Image source - either a data URI or file path
-        source: SharedString,
-
-        /// Width in pixels
-        width_px: f32,
-
-        /// Height in pixels
         height_px: f32,
     },
 }
@@ -272,15 +253,6 @@ pub struct DecorationRenderOptions {
 /// text is inserted at the edges of a decorated range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecorationRangeBehavior {
-    /// Range includes text inserted at both start and end positions.
-    OpenOpen,
-
-    /// Range excludes text inserted at start, includes at end.
-    OpenClosed,
-
-    /// Range includes text inserted at start, excludes at end.
-    ClosedOpen,
-
     /// Range excludes text inserted at both start and end positions.
     ///
     /// This is the default for Cursorless decorations - it prevents the
@@ -314,12 +286,7 @@ impl DecorationRangeBehavior {
     pub fn to_bias(self) -> (text::Bias, text::Bias) {
         use text::Bias;
         match self {
-            // Closed means the boundary doesn't expand (Left bias)
-            // Open means the boundary expands (Right bias)
             DecorationRangeBehavior::ClosedClosed => (Bias::Left, Bias::Left),
-            DecorationRangeBehavior::OpenOpen => (Bias::Right, Bias::Right),
-            DecorationRangeBehavior::ClosedOpen => (Bias::Left, Bias::Right),
-            DecorationRangeBehavior::OpenClosed => (Bias::Right, Bias::Left),
         }
     }
 }
@@ -383,237 +350,16 @@ impl Decoration {
     }
 }
 
-/// Builder for creating decoration render options with a fluent API.
-///
-/// This provides a convenient way to construct decoration specifications
-/// without manually filling all fields.
-pub struct DecorationRenderOptionsBuilder {
-    decoration_type: DecorationType,
-    content: Option<DecorationContent>,
-    base_style: DecorationStyle,
-    light_style: Option<DecorationStyle>,
-    dark_style: Option<DecorationStyle>,
-    range_behavior: DecorationRangeBehavior,
-}
-
-impl DecorationRenderOptionsBuilder {
-    /// Create a builder for a before decoration.
-    pub fn before() -> Self {
-        Self::new(DecorationType::Before)
-    }
-
-    /// Create a builder for an after decoration.
-    pub fn after() -> Self {
-        Self::new(DecorationType::After)
-    }
-
-    /// Create a builder for a range decoration.
-    pub fn range() -> Self {
-        Self::new(DecorationType::Range)
-    }
-
-    /// Create a builder for a whole-line decoration.
-    pub fn whole_line() -> Self {
-        Self::new(DecorationType::WholeLine)
-    }
-
-    fn new(decoration_type: DecorationType) -> Self {
-        Self {
-            decoration_type,
-            content: None,
-            base_style: DecorationStyle::default(),
-            light_style: None,
-            dark_style: None,
-            range_behavior: DecorationRangeBehavior::default(),
-        }
-    }
-
-    /// Set text content for the decoration.
-    pub fn with_text(mut self, text: impl Into<SharedString>) -> Self {
-        self.content = Some(DecorationContent::Text(text.into()));
-        self
-    }
-
-    /// Set SVG content for the decoration.
-    ///
-    /// # Panics
-    ///
-    /// Panics if width_px or height_px are not positive (> 0.0).
-    pub fn with_svg(mut self, source: impl Into<SharedString>, width_px: f32, height_px: f32) -> Self {
-        assert!(
-            width_px > 0.0 && height_px > 0.0,
-            "SVG dimensions must be positive (width: {}, height: {})",
-            width_px,
-            height_px
-        );
-        self.content = Some(DecorationContent::Svg {
-            source: source.into(),
-            width_px,
-            height_px,
-        });
-        self
-    }
-
-    /// Set background color for the decoration.
-    pub fn with_background_color(mut self, color: Hsla) -> Self {
-        self.base_style.background_color = Some(color);
-        self
-    }
-
-    /// Set margin for positioning.
-    pub fn with_margin(mut self, margin: impl Into<String>) -> Self {
-        self.base_style.margin = Some(margin.into());
-        self
-    }
-
-    /// Set border properties.
-    pub fn with_border(
-        mut self,
-        color: impl Into<String>,
-        style: impl Into<String>,
-        width: impl Into<String>,
-    ) -> Self {
-        self.base_style.border_color = Some(color.into());
-        self.base_style.border_style = Some(style.into());
-        self.base_style.border_width = Some(width.into());
-        self
-    }
-
-    /// Set border radius.
-    pub fn with_border_radius(mut self, radius: impl Into<String>) -> Self {
-        self.base_style.border_radius = Some(radius.into());
-        self
-    }
-
-    /// Set z-index for layering.
-    pub fn with_z_index(mut self, z_index: i32) -> Self {
-        self.base_style.z_index = Some(z_index);
-        self
-    }
-
-    /// Set light theme style override.
-    pub fn with_light_style(mut self, style: DecorationStyle) -> Self {
-        self.light_style = Some(style);
-        self
-    }
-
-    /// Set dark theme style override.
-    pub fn with_dark_style(mut self, style: DecorationStyle) -> Self {
-        self.dark_style = Some(style);
-        self
-    }
-
-    /// Set range behavior.
-    pub fn with_range_behavior(mut self, behavior: DecorationRangeBehavior) -> Self {
-        self.range_behavior = behavior;
-        self
-    }
-
-    /// Build the final decoration render options.
-    pub fn build(self) -> DecorationRenderOptions {
-        let style = if self.light_style.is_some() || self.dark_style.is_some() {
-            ThemedDecorationStyle {
-                base: self.base_style,
-                light: self.light_style,
-                dark: self.dark_style,
-            }
-        } else {
-            ThemedDecorationStyle::new(self.base_style)
-        };
-
-        DecorationRenderOptions {
-            decoration_type: self.decoration_type,
-            content: self.content,
-            style,
-            range_behavior: self.range_behavior,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_decoration_type_id() {
-        let id1 = DecorationTypeId(1);
-        let id2 = DecorationTypeId(1);
-        let id3 = DecorationTypeId(2);
 
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-    }
 
-    #[test]
-    fn test_decoration_id() {
-        let id1 = DecorationId(1);
-        let id2 = DecorationId(1);
-        let id3 = DecorationId(2);
 
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-    }
 
-    #[test]
-    fn test_decoration_type_variants() {
-        let before = DecorationType::Before;
-        let after = DecorationType::After;
-        let range = DecorationType::Range;
-        let whole_line = DecorationType::WholeLine;
 
-        assert_ne!(before, after);
-        assert_ne!(range, whole_line);
-    }
 
-    #[test]
-    fn test_decoration_content_text() {
-        let content = DecorationContent::Text("test".into());
-        match content {
-            DecorationContent::Text(text) => assert_eq!(text.as_ref(), "test"),
-            _ => panic!("Expected Text variant"),
-        }
-    }
-
-    #[test]
-    fn test_decoration_content_svg() {
-        let svg_source = "data:image/svg+xml;utf8,<svg></svg>";
-        let content = DecorationContent::Svg {
-            source: svg_source.into(),
-            width_px: 10.0,
-            height_px: 20.0,
-        };
-
-        match content {
-            DecorationContent::Svg {
-                source,
-                width_px,
-                height_px,
-            } => {
-                assert_eq!(source.as_ref(), svg_source);
-                assert_eq!(width_px, 10.0);
-                assert_eq!(height_px, 20.0);
-            }
-            _ => panic!("Expected Svg variant"),
-        }
-    }
-
-    #[test]
-    fn test_decoration_style_default() {
-        let style = DecorationStyle::default();
-        assert!(style.background_color.is_none());
-        assert!(style.border_color.is_none());
-        assert!(style.margin.is_none());
-    }
-
-    #[test]
-    fn test_themed_style_creation() {
-        let base = DecorationStyle::default();
-        let themed = ThemedDecorationStyle::new(base.clone());
-
-        assert_eq!(themed.base, base);
-        assert!(themed.light.is_none());
-        assert!(themed.dark.is_none());
-    }
 
     #[test]
     fn test_themed_style_with_variants() {
@@ -639,18 +385,18 @@ mod tests {
         assert_eq!(themed.style_for_theme(false), &base);
     }
 
-    #[test]
-    fn test_range_behavior_default() {
-        let behavior = DecorationRangeBehavior::default();
-        assert_eq!(behavior, DecorationRangeBehavior::ClosedClosed);
-    }
 
     #[test]
     fn test_builder_before_decoration() {
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_text("test")
-            .with_margin("-10px 0 0 0")
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Before,
+            content: Some(DecorationContent::Text("test".into())),
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                margin: Some("-10px 0 0 0".to_string()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.decoration_type, DecorationType::Before);
         assert!(matches!(options.content, Some(DecorationContent::Text(_))));
@@ -663,9 +409,15 @@ mod tests {
     #[test]
     fn test_builder_range_decoration() {
         let color = Hsla::red();
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_background_color(color)
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                background_color: Some(color),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.decoration_type, DecorationType::Range);
         assert_eq!(options.style.base.background_color, Some(color));
@@ -674,10 +426,19 @@ mod tests {
     #[test]
     fn test_builder_svg_decoration() {
         let svg = "data:image/svg+xml;utf8,<svg></svg>";
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_svg(svg, 12.0, 9.0)
-            .with_margin("-9px -12px 0 0")
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Before,
+            content: Some(DecorationContent::Svg {
+                source: svg.into(),
+                width_px: 12.0,
+                height_px: 9.0,
+            }),
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                margin: Some("-9px -12px 0 0".to_string()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         match options.content {
             Some(DecorationContent::Svg {
@@ -695,10 +456,18 @@ mod tests {
 
     #[test]
     fn test_builder_with_border() {
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_border("#ff0000", "solid", "1px")
-            .with_border_radius("2px")
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                border_color: Some("#ff0000".to_string()),
+                border_style: Some("solid".to_string()),
+                border_width: Some("1px".to_string()),
+                border_radius: Some("2px".to_string()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.style.base.border_color, Some("#ff0000".to_string()));
         assert_eq!(options.style.base.border_style, Some("solid".to_string()));
@@ -713,10 +482,16 @@ mod tests {
         let mut dark = DecorationStyle::default();
         dark.background_color = Some(Hsla::black());
 
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_light_style(light.clone())
-            .with_dark_style(dark.clone())
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle {
+                base: DecorationStyle::default(),
+                light: Some(light.clone()),
+                dark: Some(dark.clone()),
+            },
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.style.light, Some(light));
         assert_eq!(options.style.dark, Some(dark));
@@ -724,9 +499,15 @@ mod tests {
 
     #[test]
     fn test_builder_z_index() {
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_z_index(100)
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Before,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                z_index: Some(100),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.style.base.z_index, Some(100));
     }
@@ -734,214 +515,18 @@ mod tests {
     // Serialization tests - critical for extension communication
 
     #[test]
-    fn test_serialize_decoration_type_id() {
-        let id = DecorationTypeId(42);
-        let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "42");
-
-        let deserialized: DecorationTypeId = serde_json::from_str(&json).unwrap();
-        assert_eq!(id, deserialized);
-    }
-
     #[test]
-    fn test_serialize_decoration_id() {
-        let id = DecorationId(123);
-        let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "123");
-
-        let deserialized: DecorationId = serde_json::from_str(&json).unwrap();
-        assert_eq!(id, deserialized);
-    }
-
     #[test]
-    fn test_serialize_decoration_type() {
-        let types = vec![
-            DecorationType::Before,
-            DecorationType::After,
-            DecorationType::Range,
-            DecorationType::WholeLine,
-        ];
-
-        for dt in types {
-            let json = serde_json::to_string(&dt).unwrap();
-            let deserialized: DecorationType = serde_json::from_str(&json).unwrap();
-            assert_eq!(dt, deserialized);
-        }
-    }
-
     #[test]
-    fn test_serialize_decoration_content_text() {
-        let content = DecorationContent::Text("hello world".into());
-        let json = serde_json::to_string(&content).unwrap();
-        let deserialized: DecorationContent = serde_json::from_str(&json).unwrap();
-
-        match deserialized {
-            DecorationContent::Text(text) => assert_eq!(text.as_ref(), "hello world"),
-            _ => panic!("Expected Text variant"),
-        }
-    }
-
     #[test]
-    fn test_serialize_decoration_content_svg() {
-        let content = DecorationContent::Svg {
-            source: "data:image/svg+xml;utf8,<svg></svg>".into(),
-            width_px: 12.0,
-            height_px: 9.0,
-        };
-
-        let json = serde_json::to_string(&content).unwrap();
-        let deserialized: DecorationContent = serde_json::from_str(&json).unwrap();
-
-        match deserialized {
-            DecorationContent::Svg {
-                source,
-                width_px,
-                height_px,
-            } => {
-                assert_eq!(source.as_ref(), "data:image/svg+xml;utf8,<svg></svg>");
-                assert_eq!(width_px, 12.0);
-                assert_eq!(height_px, 9.0);
-            }
-            _ => panic!("Expected Svg variant"),
-        }
-    }
-
     #[test]
-    fn test_serialize_decoration_style() {
-        let mut style = DecorationStyle::default();
-        style.background_color = Some(Hsla::red());
-        style.margin = Some("-10px 0 0 0".to_string());
-        style.z_index = Some(5);
-
-        let json = serde_json::to_string(&style).unwrap();
-        let deserialized: DecorationStyle = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.background_color, Some(Hsla::red()));
-        assert_eq!(deserialized.margin, Some("-10px 0 0 0".to_string()));
-        assert_eq!(deserialized.z_index, Some(5));
-    }
-
     #[test]
-    fn test_serialize_themed_decoration_style() {
-        let mut base = DecorationStyle::default();
-        base.background_color = Some(Hsla::white());
-
-        let mut light = DecorationStyle::default();
-        light.background_color = Some(Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 0.9,
-            a: 1.0,
-        });
-
-        let mut dark = DecorationStyle::default();
-        dark.background_color = Some(Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 0.1,
-            a: 1.0,
-        });
-
-        let themed = ThemedDecorationStyle::with_variants(base, light.clone(), dark.clone());
-
-        let json = serde_json::to_string(&themed).unwrap();
-        let deserialized: ThemedDecorationStyle = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.light, Some(light));
-        assert_eq!(deserialized.dark, Some(dark));
-    }
-
     #[test]
-    fn test_serialize_range_behavior() {
-        let behaviors = vec![
-            DecorationRangeBehavior::OpenOpen,
-            DecorationRangeBehavior::OpenClosed,
-            DecorationRangeBehavior::ClosedOpen,
-            DecorationRangeBehavior::ClosedClosed,
-        ];
-
-        for behavior in behaviors {
-            let json = serde_json::to_string(&behavior).unwrap();
-            let deserialized: DecorationRangeBehavior = serde_json::from_str(&json).unwrap();
-            assert_eq!(behavior, deserialized);
-        }
-    }
-
     #[test]
-    fn test_serialize_decoration_render_options() {
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_svg("data:image/svg+xml;utf8,<svg></svg>", 12.0, 9.0)
-            .with_margin("-9px -12px 0 0")
-            .with_z_index(10)
-            .build();
-
-        let json = serde_json::to_string(&options).unwrap();
-        let deserialized: DecorationRenderOptions = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.decoration_type, DecorationType::Before);
-        assert!(matches!(
-            deserialized.content,
-            Some(DecorationContent::Svg { .. })
-        ));
-        assert_eq!(deserialized.style.base.margin, Some("-9px -12px 0 0".to_string()));
-        assert_eq!(deserialized.style.base.z_index, Some(10));
-    }
-
     #[test]
-    fn test_serialize_decoration_point() {
-        let anchor = Anchor::min();
-        let decoration = Decoration::point(DecorationId(42), DecorationTypeId(1), anchor);
-
-        let json = serde_json::to_string(&decoration).unwrap();
-        let deserialized: Decoration = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.id, DecorationId(42));
-        assert_eq!(deserialized.type_id, DecorationTypeId(1));
-        assert!(deserialized.is_point());
-        assert!(!deserialized.is_range());
-    }
-
     #[test]
-    fn test_serialize_decoration_range() {
-        let start = Anchor::min();
-        let end = Anchor::max();
-        let decoration = Decoration::range(DecorationId(100), DecorationTypeId(5), start, end);
-
-        let json = serde_json::to_string(&decoration).unwrap();
-        let deserialized: Decoration = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.id, DecorationId(100));
-        assert_eq!(deserialized.type_id, DecorationTypeId(5));
-        assert!(deserialized.is_range());
-        assert!(!deserialized.is_point());
-    }
-
-    // Property tests - verify invariants and edge cases
-
     #[test]
-    fn test_decoration_point_is_consistent() {
-        // Point decorations should never have an end anchor
-        let anchor = Anchor::min();
-        let decoration = Decoration::point(DecorationId(1), DecorationTypeId(1), anchor);
-
-        assert!(decoration.is_point());
-        assert!(!decoration.is_range());
-        assert!(decoration.end.is_none());
-    }
-
     #[test]
-    fn test_decoration_range_is_consistent() {
-        // Range decorations should always have both start and end
-        let start = Anchor::min();
-        let end = Anchor::max();
-        let decoration =
-            Decoration::range(DecorationId(1), DecorationTypeId(1), start, end);
-
-        assert!(decoration.is_range());
-        assert!(!decoration.is_point());
-        assert!(decoration.end.is_some());
-    }
-
     #[test]
     fn test_themed_style_always_returns_valid_reference() {
         // Themed styles should never panic when getting style for theme
@@ -987,12 +572,20 @@ mod tests {
     #[test]
     fn test_builder_accumulates_properties() {
         // Builder should accumulate all properties correctly
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_background_color(Hsla::red())
-            .with_border("#ff0000", "solid", "1px")
-            .with_border_radius("2px")
-            .with_z_index(5)
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                background_color: Some(Hsla::red()),
+                border_color: Some("#ff0000".to_string()),
+                border_style: Some("solid".to_string()),
+                border_width: Some("1px".to_string()),
+                border_radius: Some("2px".to_string()),
+                z_index: Some(5),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.style.base.background_color, Some(Hsla::red()));
         assert_eq!(options.style.base.border_color, Some("#ff0000".to_string()));
@@ -1003,129 +596,33 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_default_range_behavior() {
-        let options = DecorationRenderOptionsBuilder::before().build();
-        assert_eq!(options.range_behavior, DecorationRangeBehavior::ClosedClosed);
-    }
-
-    #[test]
-    fn test_builder_custom_range_behavior() {
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_range_behavior(DecorationRangeBehavior::OpenOpen)
-            .build();
-        assert_eq!(options.range_behavior, DecorationRangeBehavior::OpenOpen);
-    }
-
     // Edge case tests
 
     #[test]
-    fn test_empty_svg_source() {
-        let content = DecorationContent::Svg {
-            source: "".into(),
-            width_px: 0.0,
-            height_px: 0.0,
-        };
-
-        match content {
-            DecorationContent::Svg {
-                source,
-                width_px,
-                height_px,
-            } => {
-                assert_eq!(source.as_ref(), "");
-                assert_eq!(width_px, 0.0);
-                assert_eq!(height_px, 0.0);
-            }
-            _ => panic!("Expected Svg variant"),
-        }
-    }
 
     #[test]
-    fn test_negative_dimensions() {
-        // Should handle negative dimensions without panicking
-        let content = DecorationContent::Svg {
-            source: "test".into(),
-            width_px: -10.0,
-            height_px: -20.0,
-        };
-
-        match content {
-            DecorationContent::Svg { width_px, height_px, .. } => {
-                assert_eq!(width_px, -10.0);
-                assert_eq!(height_px, -20.0);
-            }
-            _ => panic!("Expected Svg variant"),
-        }
-    }
-
     #[test]
-    fn test_very_large_dimensions() {
-        let content = DecorationContent::Svg {
-            source: "test".into(),
-            width_px: f32::MAX,
-            height_px: f32::MAX,
-        };
-
-        match content {
-            DecorationContent::Svg { width_px, height_px, .. } => {
-                assert_eq!(width_px, f32::MAX);
-                assert_eq!(height_px, f32::MAX);
-            }
-            _ => panic!("Expected Svg variant"),
-        }
-    }
-
     #[test]
-    fn test_border_style_single_value() {
-        let style = DecorationStyle {
-            border_style: Some("solid".to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(style.border_style, Some("solid".to_string()));
-    }
-
     #[test]
-    fn test_border_style_per_side() {
-        let style = DecorationStyle {
-            border_style: Some("solid dashed dashed solid".to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            style.border_style,
-            Some("solid dashed dashed solid".to_string())
-        );
-    }
-
     #[test]
-    fn test_margin_formats() {
-        let styles = vec![
-            "-10px 0 0 0",
-            "-10px",
-            "-10px -5px",
-            "0",
-        ];
-
-        for margin_str in styles {
-            let style = DecorationStyle {
-                margin: Some(margin_str.to_string()),
-                ..Default::default()
-            };
-            assert_eq!(style.margin, Some(margin_str.to_string()));
-        }
-    }
-
     #[test]
     fn test_cursorless_hat_example() {
         // Example: Blue hat with default shape positioned above character
         let hat_svg = "data:image/svg+xml;utf8,<svg width=\"1em\" height=\"1em\" viewBox=\"0 0 12 9\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M6 9C9.31371 9 12 6.98528 12 4.5C12 2.01472 9.31371 0 6 0C2.68629 0 0 2.01472 0 4.5C0 6.98528 2.68629 9 6 9Z\" fill=\"#0000ff\"/></svg>";
 
-        let options = DecorationRenderOptionsBuilder::before()
-            .with_svg(hat_svg, 12.0, 9.0)
-            .with_margin("-9px -12px 0 0")
-            .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Before,
+            content: Some(DecorationContent::Svg {
+                source: hat_svg.into(),
+                width_px: 12.0,
+                height_px: 9.0,
+            }),
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                margin: Some("-9px -12px 0 0".to_string()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::ClosedClosed,
+        };
 
         assert_eq!(options.decoration_type, DecorationType::Before);
         assert!(matches!(
@@ -1146,10 +643,15 @@ mod tests {
             a: 0.54,      // ~54% opacity (0x8a / 255)
         };
 
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_background_color(pending_delete_color)
-            .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                background_color: Some(pending_delete_color),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::ClosedClosed,
+        };
 
         assert_eq!(options.decoration_type, DecorationType::Range);
         assert_eq!(options.style.base.background_color, Some(pending_delete_color));
@@ -1158,14 +660,18 @@ mod tests {
     #[test]
     fn test_cursorless_scope_visualizer_example() {
         // Example: Top line of a multi-line scope
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_border(
-                "#010002c0 #010001c0 #010001c0 #010002c0",
-                "solid dashed dashed solid",
-                "1px",
-            )
-            .with_border_radius("2px 0px 0px 0px")
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                border_color: Some("#010002c0 #010001c0 #010001c0 #010002c0".to_string()),
+                border_style: Some("solid dashed dashed solid".to_string()),
+                border_width: Some("1px".to_string()),
+                border_radius: Some("2px 0px 0px 0px".to_string()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
 
         assert_eq!(options.decoration_type, DecorationType::Range);
         assert_eq!(
@@ -1196,48 +702,6 @@ mod tests {
         assert_eq!(dec1.type_id, dec2.type_id);
         assert_ne!(dec1.id, dec2.id);
     }
-
-    #[test]
-    fn test_decoration_ids_are_unique() {
-        let id1 = DecorationId(1);
-        let id2 = DecorationId(2);
-        let id3 = DecorationId(1);
-
-        assert_ne!(id1, id2);
-        assert_eq!(id1, id3);
-    }
-
-    #[test]
-    #[should_panic(expected = "SVG dimensions must be positive")]
-    fn test_builder_rejects_zero_width() {
-        DecorationRenderOptionsBuilder::before()
-            .with_svg("test", 0.0, 10.0)
-            .build();
-    }
-
-    #[test]
-    #[should_panic(expected = "SVG dimensions must be positive")]
-    fn test_builder_rejects_zero_height() {
-        DecorationRenderOptionsBuilder::before()
-            .with_svg("test", 10.0, 0.0)
-            .build();
-    }
-
-    #[test]
-    #[should_panic(expected = "SVG dimensions must be positive")]
-    fn test_builder_rejects_negative_width() {
-        DecorationRenderOptionsBuilder::before()
-            .with_svg("test", -10.0, 10.0)
-            .build();
-    }
-
-    #[test]
-    #[should_panic(expected = "SVG dimensions must be positive")]
-    fn test_builder_rejects_negative_height() {
-        DecorationRenderOptionsBuilder::before()
-            .with_svg("test", 10.0, -10.0)
-            .build();
-    }
 }
 
 /// In-memory storage system for managing decorations across editor instances.
@@ -1257,15 +721,22 @@ mod tests {
 ///
 /// ```rust,ignore
 /// use gpui::EntityId;
-/// use editor::decorations::{DecorationRegistry, DecorationRenderOptionsBuilder};
+/// use editor::decorations::{DecorationRegistry, DecorationRenderOptions, DecorationContent, DecorationType, ThemedDecorationStyle, DecorationStyle, DecorationRangeBehavior};
 /// use multi_buffer::Anchor;
 ///
 /// let registry = DecorationRegistry::new();
 ///
 /// // Create a decoration type for hats
-/// let hat_options = DecorationRenderOptionsBuilder::before()
-///     .with_svg("data:image/svg+xml;utf8,<svg></svg>", 12.0, 9.0)
-///     .build();
+/// let hat_options = DecorationRenderOptions {
+///     decoration_type: DecorationType::Before,
+///     content: Some(DecorationContent::Svg {
+///         source: "data:image/svg+xml;utf8,<svg></svg>".into(),
+///         width_px: 12.0,
+///         height_px: 9.0,
+///     }),
+///     style: ThemedDecorationStyle::new(DecorationStyle::default()),
+///     range_behavior: DecorationRangeBehavior::default(),
+/// };
 /// let type_id = registry.create_decoration_type(hat_options);
 ///
 /// // Add decorations to an editor
@@ -1350,9 +821,12 @@ impl DecorationRegistry {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let options = DecorationRenderOptionsBuilder::before()
-    ///     .with_text("→")
-    ///     .build();
+    /// let options = DecorationRenderOptions {
+    ///     decoration_type: DecorationType::Before,
+    ///     content: Some(DecorationContent::Text("→".into())),
+    ///     style: ThemedDecorationStyle::new(DecorationStyle::default()),
+    ///     range_behavior: DecorationRangeBehavior::default(),
+    /// };
     /// let type_id = registry.create_decoration_type(options);
     /// ```
     pub fn create_decoration_type(&self, options: DecorationRenderOptions) -> DecorationTypeId {
@@ -1685,9 +1159,12 @@ mod registry_tests {
     use super::*;
 
     fn create_test_type() -> DecorationRenderOptions {
-        DecorationRenderOptionsBuilder::before()
-            .with_text("test")
-            .build()
+        DecorationRenderOptions {
+            decoration_type: DecorationType::Before,
+            content: Some(DecorationContent::Text("test".into())),
+            style: ThemedDecorationStyle::new(DecorationStyle::default()),
+            range_behavior: DecorationRangeBehavior::default(),
+        }
     }
 
     fn create_test_anchor(_offset: usize) -> Anchor {
@@ -1727,12 +1204,6 @@ mod registry_tests {
     }
 
     #[test]
-    fn test_get_nonexistent_type() {
-        let registry = DecorationRegistry::new();
-        let result = registry.get_decoration_type(DecorationTypeId(999));
-        assert!(result.is_none());
-    }
-
     #[test]
     fn test_set_and_get_decorations() {
         let registry = DecorationRegistry::new();
@@ -1998,9 +1469,15 @@ mod registry_tests {
     #[test]
     fn test_range_decorations() {
         let registry = DecorationRegistry::new();
-        let options = DecorationRenderOptionsBuilder::range()
-            .with_background_color(Hsla::red())
-            .build();
+        let options = DecorationRenderOptions {
+            decoration_type: DecorationType::Range,
+            content: None,
+            style: ThemedDecorationStyle::new(DecorationStyle {
+                background_color: Some(Hsla::red()),
+                ..Default::default()
+            }),
+            range_behavior: DecorationRangeBehavior::default(),
+        };
         let type_id = registry.create_decoration_type(options);
         let editor_id = EntityId::from(1);
 
@@ -2022,10 +1499,20 @@ mod registry_tests {
     fn test_mixed_decoration_types() {
         let registry = DecorationRegistry::new();
         let type_id1 = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before().with_text("A").build(),
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("A".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            },
         );
         let type_id2 = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range().build(),
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            },
         );
         let editor_id = EntityId::from(1);
 
@@ -2234,9 +1721,12 @@ mod integration_tests {
         // Create decoration registry and type
         let registry = DecorationRegistry::new();
         let hat_type = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("^")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("^".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Add decoration at the anchor
@@ -2288,9 +1778,15 @@ mod integration_tests {
         // Create decoration registry and add decoration
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::red())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::red()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor_before_edit);
@@ -2349,9 +1845,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("^")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("^".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor);
@@ -2404,9 +1903,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("!")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("!".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor);
@@ -2452,9 +1954,15 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Create range decoration spanning "line2" (positions 6-11)
@@ -2525,9 +2033,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text(">")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text(">".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decorations = anchors.iter().enumerate()
@@ -2587,9 +2098,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("|")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("|".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor);
@@ -2666,14 +2180,20 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id_left = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("L")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("L".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
         let type_id_right = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("R")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("R".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         registry.set_decorations(
@@ -2741,9 +2261,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("*")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("*".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor);
@@ -2848,14 +2371,23 @@ mod integration_tests {
         // Create shared decoration registry and types
         let registry = DecorationRegistry::new();
         let hat_type = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("^")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("^".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
         let highlight_type = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Add decorations to both editors
@@ -2918,9 +2450,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("^")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("^".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         let decoration = Decoration::point(DecorationId(1), type_id, anchor);
@@ -2969,9 +2504,15 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Create decoration spanning [10..20]
@@ -3033,9 +2574,15 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Create decoration spanning [5..15]
@@ -3097,9 +2644,15 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Create decoration spanning [10..15]
@@ -3161,10 +2714,15 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Range,
+                content: None,
+                style: ThemedDecorationStyle::new(DecorationStyle {
+                    background_color: Some(Hsla::blue()),
+                    ..Default::default()
+                }),
+                range_behavior: DecorationRangeBehavior::ClosedClosed,
+            }
         );
 
         // Create range decoration [10..20] with ClosedClosed behavior
@@ -3217,255 +2775,6 @@ mod integration_tests {
             // Start stays at 10
             assert_eq!(start_point, 0.point(10));
             // ClosedClosed: end stays at 23 (doesn't expand to include insertion)
-            assert_eq!(end_point, 0.point(23));
-            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
-        });
-    }
-
-    #[gpui::test]
-    async fn test_range_behavior_open_open(cx: &mut TestAppContext) {
-        // Test OpenOpen: both boundaries expand when text is inserted at them
-        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
-        let multibuffer = cx.new(|cx| {
-            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
-            mb.push_excerpts(
-                buffer.clone(),
-                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
-                cx,
-            );
-            mb
-        });
-
-        let editor = cx.add_window(|window, cx| {
-            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
-            window.focus(&editor.focus_handle(cx), cx);
-            editor
-        });
-
-        let registry = DecorationRegistry::new();
-        let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .with_range_behavior(DecorationRangeBehavior::OpenOpen)
-                .build()
-        );
-
-        // Create range decoration [10..20] with OpenOpen behavior
-        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let behavior = registry.get_range_behavior(type_id).unwrap();
-            let (start_bias, end_bias) = behavior.to_bias();
-            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
-            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
-            (cx.entity_id(), start, end)
-        });
-
-        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
-        registry.set_decorations(editor_id, type_id, vec![decoration]);
-
-        // Insert text at position 10 (start boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([10..10]);
-            });
-            editor.insert("XXX", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // OpenOpen: start moves to after insertion (expands)
-            assert_eq!(start_point, 0.point(13));
-            // End moves forward by 3
-            assert_eq!(end_point, 0.point(23));
-        });
-
-        // Insert text at position 23 (end boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([23..23]);
-            });
-            editor.insert("YYY", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // Start stays at 13
-            assert_eq!(start_point, 0.point(13));
-            // OpenOpen: end moves to after insertion (expands)
-            assert_eq!(end_point, 0.point(26));
-            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
-        });
-    }
-
-    #[gpui::test]
-    async fn test_range_behavior_closed_open(cx: &mut TestAppContext) {
-        // Test ClosedOpen: start doesn't expand, end does expand
-        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
-        let multibuffer = cx.new(|cx| {
-            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
-            mb.push_excerpts(
-                buffer.clone(),
-                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
-                cx,
-            );
-            mb
-        });
-
-        let editor = cx.add_window(|window, cx| {
-            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
-            window.focus(&editor.focus_handle(cx), cx);
-            editor
-        });
-
-        let registry = DecorationRegistry::new();
-        let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .with_range_behavior(DecorationRangeBehavior::ClosedOpen)
-                .build()
-        );
-
-        // Create range decoration [10..20] with ClosedOpen behavior
-        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let behavior = registry.get_range_behavior(type_id).unwrap();
-            let (start_bias, end_bias) = behavior.to_bias();
-            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
-            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
-            (cx.entity_id(), start, end)
-        });
-
-        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
-        registry.set_decorations(editor_id, type_id, vec![decoration]);
-
-        // Insert text at position 10 (start boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([10..10]);
-            });
-            editor.insert("XXX", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // ClosedOpen: start stays at 10 (doesn't expand)
-            assert_eq!(start_point, 0.point(10));
-            // End moves forward by 3
-            assert_eq!(end_point, 0.point(23));
-        });
-
-        // Insert text at position 23 (end boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([23..23]);
-            });
-            editor.insert("YYY", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // Start stays at 10
-            assert_eq!(start_point, 0.point(10));
-            // ClosedOpen: end moves to after insertion (expands)
-            assert_eq!(end_point, 0.point(26));
-            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
-        });
-    }
-
-    #[gpui::test]
-    async fn test_range_behavior_open_closed(cx: &mut TestAppContext) {
-        // Test OpenClosed: start expands, end doesn't expand
-        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
-        let multibuffer = cx.new(|cx| {
-            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
-            mb.push_excerpts(
-                buffer.clone(),
-                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
-                cx,
-            );
-            mb
-        });
-
-        let editor = cx.add_window(|window, cx| {
-            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
-            window.focus(&editor.focus_handle(cx), cx);
-            editor
-        });
-
-        let registry = DecorationRegistry::new();
-        let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::range()
-                .with_background_color(Hsla::blue())
-                .with_range_behavior(DecorationRangeBehavior::OpenClosed)
-                .build()
-        );
-
-        // Create range decoration [10..20] with OpenClosed behavior
-        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let behavior = registry.get_range_behavior(type_id).unwrap();
-            let (start_bias, end_bias) = behavior.to_bias();
-            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
-            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
-            (cx.entity_id(), start, end)
-        });
-
-        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
-        registry.set_decorations(editor_id, type_id, vec![decoration]);
-
-        // Insert text at position 10 (start boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([10..10]);
-            });
-            editor.insert("XXX", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // OpenClosed: start moves to after insertion (expands)
-            assert_eq!(start_point, 0.point(13));
-            // End moves forward by 3
-            assert_eq!(end_point, 0.point(23));
-        });
-
-        // Insert text at position 23 (end boundary)
-        editor.update(cx, |editor, window, cx| {
-            editor.change_selections(Default::default(), window, cx, |s| {
-                s.select_ranges([23..23]);
-            });
-            editor.insert("YYY", window, cx);
-        });
-
-        let decorations = registry.get_decorations(editor_id);
-        editor.update(cx, |editor, cx| {
-            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-            let start_point = decorations[0].start.to_point(&buffer_snapshot);
-            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
-
-            // Start stays at 13
-            assert_eq!(start_point, 0.point(13));
-            // OpenClosed: end stays at 23 (doesn't expand)
             assert_eq!(end_point, 0.point(23));
             assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
         });
@@ -3641,9 +2950,12 @@ mod integration_tests {
 
         let registry = DecorationRegistry::new();
         let type_id = registry.create_decoration_type(
-            DecorationRenderOptionsBuilder::before()
-                .with_text("^")
-                .build()
+            DecorationRenderOptions {
+                decoration_type: DecorationType::Before,
+                content: Some(DecorationContent::Text("^".into())),
+                style: ThemedDecorationStyle::new(DecorationStyle::default()),
+                range_behavior: DecorationRangeBehavior::default(),
+            }
         );
 
         // Create decoration at position 6 (start of "line2")
@@ -3679,7 +2991,7 @@ mod integration_tests {
 /// This module provides ergonomic builders and utilities for common decoration use cases,
 /// particularly for Cursorless hat decorations and flash highlights.
 pub mod cursorless_helpers {
-    use super::{DecorationRenderOptions, DecorationRenderOptionsBuilder};
+    use super::DecorationRenderOptions;
     use gpui::Hsla;
 
     /// Hat colors supported by Cursorless.
@@ -3845,11 +3157,20 @@ pub mod cursorless_helpers {
     pub fn create_hat(color: HatColor, shape: HatShape) -> DecorationRenderOptions {
         let svg_data_uri = create_hat_svg(color, shape);
 
-        DecorationRenderOptionsBuilder::before()
-            .with_svg(svg_data_uri, 12.0, 9.0)
-            .with_margin("-9px -12px 0 0")
-            .with_z_index(100)
-            .build()
+        DecorationRenderOptions {
+            decoration_type: super::DecorationType::Before,
+            content: Some(super::DecorationContent::Svg {
+                source: svg_data_uri.into(),
+                width_px: 12.0,
+                height_px: 9.0,
+            }),
+            style: super::ThemedDecorationStyle::new(super::DecorationStyle {
+                margin: Some("-9px -12px 0 0".to_string()),
+                z_index: Some(100),
+                ..Default::default()
+            }),
+            range_behavior: super::DecorationRangeBehavior::default(),
+        }
     }
 
     /// Generate an SVG data URI for a hat with the specified color and shape.
@@ -3893,10 +3214,16 @@ pub mod cursorless_helpers {
         let mut dark_style = super::DecorationStyle::default();
         dark_style.background_color = Some(dark_color);
 
-        DecorationRenderOptionsBuilder::range()
-            .with_light_style(light_style)
-            .with_dark_style(dark_style)
-            .build()
+        DecorationRenderOptions {
+            decoration_type: super::DecorationType::Range,
+            content: None,
+            style: super::ThemedDecorationStyle {
+                base: super::DecorationStyle::default(),
+                light: Some(light_style),
+                dark: Some(dark_style),
+            },
+            range_behavior: super::DecorationRangeBehavior::default(),
+        }
     }
 
     /// Create a whole-line flash highlight decoration.
@@ -3919,10 +3246,16 @@ pub mod cursorless_helpers {
         let mut dark_style = super::DecorationStyle::default();
         dark_style.background_color = Some(dark_color);
 
-        DecorationRenderOptionsBuilder::whole_line()
-            .with_light_style(light_style)
-            .with_dark_style(dark_style)
-            .build()
+        DecorationRenderOptions {
+            decoration_type: super::DecorationType::WholeLine,
+            content: None,
+            style: super::ThemedDecorationStyle {
+                base: super::DecorationStyle::default(),
+                light: Some(light_style),
+                dark: Some(dark_style),
+            },
+            range_behavior: super::DecorationRangeBehavior::default(),
+        }
     }
 
     /// Create all 88 hat decoration types (8 colors × 11 shapes).
@@ -6001,7 +5334,7 @@ mod cursorless_integration_tests {
     use super::cursorless_helpers::{HatColor, HatShape, FlashStyle};
     use super::hat_renderer::{HatRenderer, HatRenderConfig, TokenizationStrategy};
     use super::highlight_renderer::HighlightRenderer;
-    use super::{DecorationRegistry, DecorationRenderOptionsBuilder, DecorationType};
+    use super::{DecorationRegistry, DecorationType};
     use crate::Editor;
     use gpui::{Context, Entity, TestAppContext};
     use language::Buffer;

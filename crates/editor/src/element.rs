@@ -6811,7 +6811,7 @@ impl EditorElement {
             let style = decoration.options.style.style_for_theme(is_light_theme);
 
             match decoration.options.decoration_type {
-                DecorationType::Before | DecorationType::After => {
+                DecorationType::Before => {
                     let row = decoration.position.row();
                     let column = decoration.position.column();
 
@@ -6905,10 +6905,6 @@ impl EditorElement {
                                     cx,
                                 )
                                 .log_err();
-                        }
-                        Some(DecorationContent::Image { .. }) => {
-                            // Image rendering not yet implemented
-                            // This would be similar to SVG but using window.paint_image
                         }
                         None => {
                             // No content to render
