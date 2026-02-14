@@ -4900,7 +4900,6 @@ mod hat_renderer_tests {
 }
 // END hat_renderer and hat_renderer_tests
 
-/*
 // TEMPORARILY COMMENTED OUT - See ticket zed-cursorless-ukb
 // highlight_renderer module also has multi-buffer API integration issues
 pub mod highlight_renderer {
@@ -4944,6 +4943,7 @@ pub mod highlight_renderer {
     use super::{Decoration, DecorationId, DecorationTypeId};
     use crate::Editor;
     use gpui::Context;
+    use multi_buffer::MultiBufferOffset;
     use std::collections::HashMap;
     use std::ops::Range;
 
@@ -5060,8 +5060,8 @@ pub mod highlight_renderer {
             let buffer = editor.buffer().read(cx);
             let snapshot = buffer.snapshot(cx);
 
-            let start_anchor = snapshot.anchor_before(range.start);
-            let end_anchor = snapshot.anchor_after(range.end);
+            let start_anchor = snapshot.anchor_before(MultiBufferOffset(range.start));
+            let end_anchor = snapshot.anchor_after(MultiBufferOffset(range.end));
 
             let decoration_id = self.next_id();
             let decoration = Decoration::range(decoration_id, type_id, start_anchor, end_anchor);
@@ -5115,8 +5115,8 @@ pub mod highlight_renderer {
                 let config = HighlightConfig::new(style, is_line_highlight);
                 let type_id = self.get_or_create_highlight_type(config, editor);
 
-                let start_anchor = snapshot.anchor_before(range.start);
-                let end_anchor = snapshot.anchor_after(range.end);
+                let start_anchor = snapshot.anchor_before(MultiBufferOffset(range.start));
+                let end_anchor = snapshot.anchor_after(MultiBufferOffset(range.end));
 
                 let decoration_id = self.next_id();
                 let decoration =
@@ -5177,8 +5177,8 @@ pub mod highlight_renderer {
             let mut decoration_ids = Vec::new();
 
             for range in ranges {
-                let start_anchor = snapshot.anchor_before(range.start);
-                let end_anchor = snapshot.anchor_after(range.end);
+                let start_anchor = snapshot.anchor_before(MultiBufferOffset(range.start));
+                let end_anchor = snapshot.anchor_after(MultiBufferOffset(range.end));
 
                 let decoration_id = self.next_id();
                 let decoration =
@@ -5504,7 +5504,6 @@ mod highlight_renderer_tests {
         });
     }
 }
-*/
 // END COMMENTED OUT SECTION - highlight_renderer and highlight_renderer_tests
 
 /*
