@@ -204,6 +204,8 @@ struct LayoutDecoration {
     end_position: Option<DisplayPoint>,
     /// Decoration render options (content, style, etc.)
     options: crate::DecorationRenderOptions,
+    /// Cached parsed SVG bytes (if this is an SVG decoration with a data URI)
+    cached_svg_bytes: Option<Vec<u8>>,
 }
 
 pub struct EditorElement {
@@ -5698,14 +5700,15 @@ impl EditorElement {
                 continue;
             }
 
-            // Get decoration options from the registry
-            if let Some(options) = registry.get_decoration_type(decoration.type_id) {
+            // Get decoration options and cached SVG bytes from the registry
+            if let Some((options, cached_svg_bytes)) = registry.get_decoration_type_with_cache(decoration.type_id) {
                 decorations.push(LayoutDecoration {
                     id: decoration.id,
                     type_id: decoration.type_id,
                     position: start_point,
                     end_position: end_point,
                     options,
+                    cached_svg_bytes,
                 });
             }
         }
@@ -6798,6 +6801,7 @@ impl EditorElement {
 
     fn paint_decorations(&mut self, layout: &EditorLayout, window: &mut Window, cx: &App) {
         use crate::{DecorationType, DecorationContent};
+        use decoration_helpers::parse_margin;
 
         let is_light_theme = cx.theme().appearance == Appearance::Light;
         let line_height = layout.position_map.line_height;
@@ -6881,41 +6885,26 @@ impl EditorElement {
                                 size: gpui::size(px(width_px), px(height_px)),
                             };
 
-                            // Parse SVG data URI and render
-                            if let Some(svg_bytes) = parse_svg_data_uri(source.as_ref()) {
-                                // Get color from style or use default
-                                let color = style
-                                    .background_color
-                                    .unwrap_or_else(|| cx.theme().colors().text);
+                            // Use cached SVG bytes if available (parsed once at decoration type creation)
+                            // This avoids parsing data URIs thousands of times per frame
+                            let svg_bytes_ref = decoration.cached_svg_bytes.as_deref();
 
-                                // Render the SVG
-                                window
-                                    .paint_svg(
-                                        bounds,
-                                        source.clone(),
-                                        Some(&svg_bytes),
-                                        Default::default(),
-                                        color,
-                                        cx,
-                                    )
-                                    .log_err();
-                            } else {
-                                // If not a data URI, try as file path
-                                let color = style
-                                    .background_color
-                                    .unwrap_or_else(|| cx.theme().colors().text);
+                            // Get color from style or use default
+                            let color = style
+                                .background_color
+                                .unwrap_or_else(|| cx.theme().colors().text);
 
-                                window
-                                    .paint_svg(
-                                        bounds,
-                                        source.clone(),
-                                        None,
-                                        Default::default(),
-                                        color,
-                                        cx,
-                                    )
-                                    .log_err();
-                            }
+                            // Render the SVG
+                            window
+                                .paint_svg(
+                                    bounds,
+                                    source.clone(),
+                                    svg_bytes_ref,
+                                    Default::default(),
+                                    color,
+                                    cx,
+                                )
+                                .log_err();
                         }
                         Some(DecorationContent::Image { .. }) => {
                             // Image rendering not yet implemented

@@ -20,6 +20,38 @@ use multi_buffer::Anchor;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Parse SVG data URI and extract the SVG content as bytes.
+///
+/// Supports two formats:
+/// 1. `data:image/svg+xml;utf8,<svg>...</svg>` - UTF-8 encoded
+/// 2. `data:image/svg+xml;base64,PHN2Zy4uLjwvc3ZnPg==` - Base64 encoded
+///
+/// Returns the decoded SVG bytes if the URI is valid, None otherwise.
+fn parse_svg_data_uri(uri: &str) -> Option<Vec<u8>> {
+    let uri = uri.trim();
+
+    if !uri.starts_with("data:") {
+        return None;
+    }
+
+    let uri = uri.strip_prefix("data:")?;
+
+    let (mime_and_encoding, data) = uri.split_once(',')?;
+
+    if !mime_and_encoding.starts_with("image/svg+xml") {
+        return None;
+    }
+
+    if mime_and_encoding.contains("base64") {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .ok()
+    } else {
+        Some(data.as_bytes().to_vec())
+    }
+}
+
 /// Unique identifier for a decoration type.
 ///
 /// Decoration types define the visual style of decorations. Multiple decoration
@@ -1251,6 +1283,11 @@ struct DecorationTypeData {
     /// Reference count tracking how many decoration instances use this type.
     /// When this reaches zero, the type can be safely disposed.
     reference_count: usize,
+
+    /// Cached parsed SVG bytes for data URI decorations.
+    /// This is computed once when the decoration type is created to avoid
+    /// parsing the same SVG data URI thousands of times per frame.
+    cached_svg_bytes: Option<Vec<u8>>,
 }
 
 /// All decorations for a single editor.
@@ -1293,11 +1330,20 @@ impl DecorationRegistry {
         let type_id = DecorationTypeId(inner.next_type_id);
         inner.next_type_id += 1;
 
+        // Parse and cache SVG data URIs once at creation time to avoid
+        // parsing thousands of times per frame during rendering
+        let cached_svg_bytes = if let Some(DecorationContent::Svg { ref source, .. }) = options.content {
+            parse_svg_data_uri(source.as_ref())
+        } else {
+            None
+        };
+
         inner.decoration_types.insert(
             type_id,
             DecorationTypeData {
                 options,
                 reference_count: 0,
+                cached_svg_bytes,
             },
         );
 
@@ -1310,6 +1356,16 @@ impl DecorationRegistry {
     pub fn get_decoration_type(&self, type_id: DecorationTypeId) -> Option<DecorationRenderOptions> {
         let inner = self.inner.read().expect("registry lock poisoned");
         inner.decoration_types.get(&type_id).map(|data| data.options.clone())
+    }
+
+    /// Get the render options and cached SVG bytes for a decoration type.
+    ///
+    /// Returns `None` if the type ID doesn't exist.
+    /// The cached SVG bytes will be Some if the decoration type has SVG content
+    /// with a data URI that was successfully parsed at creation time.
+    pub fn get_decoration_type_with_cache(&self, type_id: DecorationTypeId) -> Option<(DecorationRenderOptions, Option<Vec<u8>>)> {
+        let inner = self.inner.read().expect("registry lock poisoned");
+        inner.decoration_types.get(&type_id).map(|data| (data.options.clone(), data.cached_svg_bytes.clone()))
     }
 
     /// Set the decorations for a specific type in an editor.
