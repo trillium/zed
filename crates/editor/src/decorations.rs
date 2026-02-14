@@ -2224,7 +2224,7 @@ mod integration_tests {
         let (editor_id, anchor_before_edit) = editor.update(cx, |editor, cx| {
             let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
             let point = buffer_snapshot.offset_to_point(5);
-            let anchor = buffer_snapshot.anchor_at(point, text::Bias::Left);
+            let anchor = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
             (cx.entity_id(), anchor)
         });
 
@@ -2260,6 +2260,477 @@ mod integration_tests {
             // Verify buffer content
             let text = buffer_snapshot.text();
             assert_eq!(text, "abXXXcdefghij");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_insertion_after(cx: &mut TestAppContext) {
+        // Test that decorations stay stable when inserting text after them
+        let buffer = cx.new(|cx| Buffer::local("abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..10].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let point = buffer_snapshot.offset_to_point(3);
+            let anchor = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("^")
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 7 (after the anchor)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([7..7]);
+            });
+            editor.insert("YYY", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+            // Anchor should stay at position 3
+            assert_eq!(dec_point, 0.point(3));
+            assert_eq!(buffer_snapshot.text(), "abcdefgYYYhij");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_deletion_before(cx: &mut TestAppContext) {
+        // Test decoration tracking when text before it is deleted
+        let buffer = cx.new(|cx| Buffer::local("abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..10].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let point = buffer_snapshot.offset_to_point(7);
+            let anchor = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("!")
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Delete text from positions 2-5 (before the anchor)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([2..5]);
+            });
+            editor.delete(window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+            // Anchor should move back by 3 (deleted chars): 7 - 3 = 4
+            assert_eq!(dec_point, 0.point(4));
+            assert_eq!(buffer_snapshot.text(), "abfghij");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_range_tracking(cx: &mut TestAppContext) {
+        // Test that range decorations track correctly through edits
+        let buffer = cx.new(|cx| Buffer::local("line1\nline2\nline3\n", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..18].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        // Create range decoration spanning "line2" (positions 6-11)
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(6), sum_tree::Bias::Left);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(11), sum_tree::Bias::Left);
+            (cx.entity_id(), start, end)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .build()
+        );
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text before the range
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([0..0]);
+            });
+            editor.insert("PREFIX", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Both anchors should have moved by 6 positions
+            assert_eq!(start_point, 0.point(12)); // 6 + 6
+            assert_eq!(end_point, 0.point(17));   // 11 + 6
+            assert_eq!(buffer_snapshot.text(), "PREFIXline1\nline2\nline3\n");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_multi_cursor_edits(cx: &mut TestAppContext) {
+        // Test decorations with multiple cursors editing simultaneously
+        let buffer = cx.new(|cx| Buffer::local("aaa\nbbb\nccc\n", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..12].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        // Place decorations at the start of each line (0, 4, 8)
+        let (editor_id, anchors) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let anchors = vec![
+                buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(0), sum_tree::Bias::Left),
+                buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(4), sum_tree::Bias::Left),
+                buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(8), sum_tree::Bias::Left),
+            ];
+            (cx.entity_id(), anchors)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text(">")
+                .build()
+        );
+
+        let decorations = anchors.iter().enumerate()
+            .map(|(i, anchor)| Decoration::point(DecorationId(i), type_id, *anchor))
+            .collect();
+        registry.set_decorations(editor_id, type_id, decorations);
+
+        // Insert "X" at position 2 (in first line)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([2..2]);
+            });
+            editor.insert("X", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+
+            // First decoration stays at 0
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(0));
+            // Second decoration moves from 4 to 5
+            assert_eq!(decorations[1].start.to_point(&buffer_snapshot), 0.point(5));
+            // Third decoration moves from 8 to 9
+            assert_eq!(decorations[2].start.to_point(&buffer_snapshot), 0.point(9));
+
+            assert_eq!(buffer_snapshot.text(), "aaXa\nbbb\nccc\n");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_undo_redo(cx: &mut TestAppContext) {
+        // Test that decorations track correctly through undo/redo
+        let buffer = cx.new(|cx| Buffer::local("original", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..8].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let point = buffer_snapshot.offset_to_point(4);
+            let anchor = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("|")
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([0..0]);
+            });
+            editor.insert("START_", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+
+        // Verify decoration moved
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(10));
+        });
+
+        // Undo
+        editor.update(cx, |editor, window, cx| {
+            editor.undo(window, cx);
+        });
+
+        // Decoration should be back at original position
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(4));
+            assert_eq!(buffer_snapshot.text(), "original");
+        });
+
+        // Redo
+        editor.update(cx, |editor, window, cx| {
+            editor.redo(window, cx);
+        });
+
+        // Decoration should move forward again
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(10));
+            assert_eq!(buffer_snapshot.text(), "START_original");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_bias_behavior(cx: &mut TestAppContext) {
+        // Test that Left bias doesn't expand when inserting at the anchor position
+        let buffer = cx.new(|cx| Buffer::local("abcdef", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..6].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, left_anchor, right_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let point = buffer_snapshot.offset_to_point(3);
+            let left = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
+            let right = buffer_snapshot.anchor_at(point, sum_tree::Bias::Right);
+            (cx.entity_id(), left, right)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id_left = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("L")
+                .build()
+        );
+        let type_id_right = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("R")
+                .build()
+        );
+
+        registry.set_decorations(
+            editor_id,
+            type_id_left,
+            vec![Decoration::point(DecorationId(1), type_id_left, left_anchor)]
+        );
+        registry.set_decorations(
+            editor_id,
+            type_id_right,
+            vec![Decoration::point(DecorationId(2), type_id_right, right_anchor)]
+        );
+
+        // Insert at position 3 (exactly at the anchor position)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([3..3]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        let left_decorations = registry.get_decorations_for_type(editor_id, type_id_left);
+        let right_decorations = registry.get_decorations_for_type(editor_id, type_id_right);
+
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+
+            // Left bias: anchor stays before the inserted text
+            assert_eq!(left_decorations[0].start.to_point(&buffer_snapshot), 0.point(3));
+
+            // Right bias: anchor moves after the inserted text
+            assert_eq!(right_decorations[0].start.to_point(&buffer_snapshot), 0.point(6));
+
+            assert_eq!(buffer_snapshot.text(), "abcXXXdef");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_complex_edit_sequence(cx: &mut TestAppContext) {
+        // Test decorations through a complex sequence of edits
+        let buffer = cx.new(|cx| Buffer::local("line1\nline2\nline3\nline4\n", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..24].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Place anchor at start of line3 (position 12)
+            let point = buffer_snapshot.offset_to_point(12);
+            let anchor = buffer_snapshot.anchor_at(point, sum_tree::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("*")
+                .build()
+        );
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Edit 1: Insert at beginning
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([0..0]);
+            });
+            editor.insert("START\n", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Anchor moved by 6 positions
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(18));
+        });
+
+        // Edit 2: Delete a line before the anchor
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([6..12]); // Delete "line1\n"
+            });
+            editor.delete(window, cx);
+        });
+
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Anchor moved back by 6 positions
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(12));
+        });
+
+        // Edit 3: Insert within the line containing the anchor
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([14..14]); // Insert after "li"
+            });
+            editor.insert("MIDDLE", window, cx);
+        });
+
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            // Anchor stays at line start
+            assert_eq!(decorations[0].start.to_point(&buffer_snapshot), 0.point(12));
+            assert_eq!(buffer_snapshot.text(), "START\nline2\nliMIDDLEne3\nline4\n");
         });
     }
 
