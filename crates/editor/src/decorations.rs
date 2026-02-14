@@ -5506,9 +5506,6 @@ mod highlight_renderer_tests {
 }
 // END COMMENTED OUT SECTION - highlight_renderer and highlight_renderer_tests
 
-/*
-// TEMPORARILY COMMENTED OUT - See ticket zed-cursorless-ukb
-// These integration tests depend on hat_renderer which is currently disabled.
 #[cfg(all(test, feature = "test-support"))]
 mod cursorless_integration_tests {
     //! End-to-end integration tests for the Cursorless hat rendering pipeline.
@@ -5965,6 +5962,3 @@ mod cursorless_integration_tests {
         });
     }
 }
-
-*/
-// END COMMENTED OUT SECTION - cursorless_integration_tests
