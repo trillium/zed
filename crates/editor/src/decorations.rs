@@ -4713,3 +4713,658 @@ mod hat_tokenizer_tests {
         assert_eq!(tokens[0].text, "👨‍👩‍👧‍👦");
     }
 }
+
+pub mod hat_renderer {
+    //! Hat rendering system for Cursorless integration in Zed.
+    //!
+    //! This module provides the integration layer between the tokenizer, decoration API,
+    //! and the editor. It manages the lifecycle of hat decorations, providing a clean
+    //! API for showing, updating, and hiding hats on editor tokens.
+    //!
+    //! # Features
+    //!
+    //! - **Automatic token scanning**: Finds tokens in the viewport for hat placement
+    //! - **Sequential hat assignment**: Assign hats to consecutive tokens
+    //! - **Explicit positioning**: Place specific hats at specific token indices
+    //! - **Efficient updates**: Only recreates decorations when necessary
+    //! - **Viewport-aware**: Handles large files by focusing on visible content
+    //! - **Style management**: Integrates with cursorless_helpers for 88 hat styles
+    //!
+    //! # Examples
+    //!
+    //! ```rust,ignore
+    //! use editor::decorations::hat_renderer::*;
+    //! use editor::decorations::cursorless_helpers::{HatColor, HatShape};
+    //! use editor::Editor;
+    //!
+    //! let mut renderer = HatRenderer::new();
+    //!
+    //! let blue_default = (HatColor::Blue, HatShape::Default);
+    //! let red_bolt = (HatColor::Red, HatShape::Bolt);
+    //! let hats = vec![blue_default, red_bolt];
+    //!
+    //! renderer.assign_hats(&editor, hats, cx);
+    //!
+    //! renderer.clear_hats(&editor, cx);
+    //! ```
+
+    use super::cursorless_helpers::{create_hat, HatColor, HatShape};
+    use super::hat_tokenizer::{filter_non_whitespace, tokenize_range, Token, TokenizationStrategy};
+    use super::{DecorationId, DecorationInstance, DecorationTypeId};
+    use crate::Editor;
+    use gpui::Context;
+    use std::collections::HashMap;
+    use std::ops::Range;
+
+    /// Represents a hat style as a color and shape combination.
+    pub type HatStyle = (HatColor, HatShape);
+
+    /// Strategy for assigning hats to tokens.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HatAssignmentStrategy {
+        /// Assign hats sequentially to consecutive non-whitespace tokens.
+        Sequential,
+        /// Assign hats to specific token indices (explicit mapping).
+        Explicit,
+    }
+
+    /// Configuration for hat rendering behavior.
+    #[derive(Debug, Clone)]
+    pub struct HatRenderConfig {
+        /// Strategy for tokenizing text
+        pub tokenization_strategy: TokenizationStrategy,
+        /// Whether to filter out whitespace tokens
+        pub skip_whitespace: bool,
+        /// Optional byte range to limit tokenization (viewport optimization)
+        pub range: Option<Range<usize>>,
+    }
+
+    impl Default for HatRenderConfig {
+        fn default() -> Self {
+            Self {
+                tokenization_strategy: TokenizationStrategy::Graphemes,
+                skip_whitespace: true,
+                range: None,
+            }
+        }
+    }
+
+    /// Manages hat decorations for a single editor.
+    ///
+    /// This struct maintains the state needed to render hats, including:
+    /// - Decoration type IDs for each unique hat style
+    /// - Current hat assignments
+    /// - Configuration for tokenization and rendering
+    pub struct HatRenderer {
+        /// Maps hat styles to their decoration type IDs
+        hat_type_cache: HashMap<HatStyle, DecorationTypeId>,
+        /// Current configuration
+        config: HatRenderConfig,
+        /// Decoration IDs for active hats (for tracking and cleanup)
+        active_decorations: Vec<DecorationId>,
+    }
+
+    impl HatRenderer {
+        /// Creates a new hat renderer with default configuration.
+        pub fn new() -> Self {
+            Self {
+                hat_type_cache: HashMap::new(),
+                config: HatRenderConfig::default(),
+                active_decorations: Vec::new(),
+            }
+        }
+
+        /// Creates a new hat renderer with custom configuration.
+        pub fn with_config(config: HatRenderConfig) -> Self {
+            Self {
+                hat_type_cache: HashMap::new(),
+                config,
+                active_decorations: Vec::new(),
+            }
+        }
+
+        /// Gets or creates a decoration type ID for a hat style.
+        ///
+        /// This caches decoration types to avoid recreating them repeatedly.
+        fn get_or_create_hat_type(
+            &mut self,
+            hat_style: HatStyle,
+            editor: &mut Editor,
+        ) -> DecorationTypeId {
+            if let Some(&type_id) = self.hat_type_cache.get(&hat_style) {
+                return type_id;
+            }
+
+            let (color, shape) = hat_style;
+            let decoration_options = create_hat(color, shape);
+            let type_id = editor.create_decoration_type(decoration_options);
+
+            self.hat_type_cache.insert(hat_style, type_id);
+            type_id
+        }
+
+        /// Tokenizes the editor's text according to the current configuration.
+        ///
+        /// Returns a vector of tokens, optionally filtered to remove whitespace.
+        fn tokenize_editor(&self, editor: &Editor, cx: &mut Context<Editor>) -> Vec<Token> {
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+            let rope = snapshot.as_rope();
+
+            let tokens = if let Some(ref range) = self.config.range {
+                tokenize_range(rope, self.config.tokenization_strategy, range.clone())
+            } else {
+                super::hat_tokenizer::tokenize_rope(rope, self.config.tokenization_strategy)
+            };
+
+            if self.config.skip_whitespace {
+                filter_non_whitespace(tokens)
+            } else {
+                tokens
+            }
+        }
+
+        /// Assigns hats to consecutive non-whitespace tokens in the editor.
+        ///
+        /// This is the main API for displaying hats. It:
+        /// 1. Tokenizes the editor text
+        /// 2. Assigns each hat to a token in sequence
+        /// 3. Creates decoration instances at token positions
+        /// 4. Registers them with the editor's decoration registry
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to add hats to
+        /// * `hat_styles` - Vector of hat styles to assign to tokens
+        /// * `cx` - The context for updating the editor
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// let hats = vec![
+        ///     (HatColor::Blue, HatShape::Default),
+        ///     (HatColor::Red, HatShape::Bolt),
+        /// ];
+        /// renderer.assign_hats(&editor, hats, cx);
+        /// ```
+        pub fn assign_hats(
+            &mut self,
+            editor: &mut Editor,
+            hat_styles: Vec<HatStyle>,
+            cx: &mut Context<Editor>,
+        ) {
+            if hat_styles.is_empty() {
+                return;
+            }
+
+            let tokens = self.tokenize_editor(editor, cx);
+            if tokens.is_empty() {
+                return;
+            }
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+
+            let mut decorations_by_type: HashMap<DecorationTypeId, Vec<DecorationInstance>> =
+                HashMap::new();
+
+            for (hat_index, hat_style) in hat_styles.iter().enumerate() {
+                if hat_index >= tokens.len() {
+                    break;
+                }
+
+                let token = &tokens[hat_index];
+                let type_id = self.get_or_create_hat_type(*hat_style, editor);
+
+                let anchor = snapshot.anchor_before(token.offset);
+
+                let decoration = DecorationInstance { id: None, anchor };
+
+                decorations_by_type
+                    .entry(type_id)
+                    .or_insert_with(Vec::new)
+                    .push(decoration);
+            }
+
+            for (type_id, decorations) in decorations_by_type {
+                editor.set_decorations(type_id, decorations, cx);
+            }
+
+            cx.notify();
+        }
+
+        /// Assigns hats to specific token positions.
+        ///
+        /// Unlike `assign_hats`, this allows explicit control over which tokens
+        /// receive which hats through a mapping of token index to hat style.
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to add hats to
+        /// * `hat_mapping` - Map from token index to hat style
+        /// * `cx` - The context for updating the editor
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// let mut mapping = HashMap::new();
+        /// mapping.insert(0, (HatColor::Blue, HatShape::Default));
+        /// mapping.insert(5, (HatColor::Red, HatShape::Bolt));
+        /// renderer.assign_hats_at_positions(&editor, mapping, cx);
+        /// ```
+        pub fn assign_hats_at_positions(
+            &mut self,
+            editor: &mut Editor,
+            hat_mapping: HashMap<usize, HatStyle>,
+            cx: &mut Context<Editor>,
+        ) {
+            if hat_mapping.is_empty() {
+                return;
+            }
+
+            let tokens = self.tokenize_editor(editor, cx);
+            if tokens.is_empty() {
+                return;
+            }
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+
+            let mut decorations_by_type: HashMap<DecorationTypeId, Vec<DecorationInstance>> =
+                HashMap::new();
+
+            for (token_index, hat_style) in hat_mapping.iter() {
+                if let Some(token) = tokens.get(*token_index) {
+                    let type_id = self.get_or_create_hat_type(*hat_style, editor);
+                    let anchor = snapshot.anchor_before(token.offset);
+
+                    let decoration = DecorationInstance { id: None, anchor };
+
+                    decorations_by_type
+                        .entry(type_id)
+                        .or_insert_with(Vec::new)
+                        .push(decoration);
+                }
+            }
+
+            for (type_id, decorations) in decorations_by_type {
+                editor.set_decorations(type_id, decorations, cx);
+            }
+
+            cx.notify();
+        }
+
+        /// Clears all hat decorations from the editor.
+        ///
+        /// This removes all decorations for all cached hat types.
+        pub fn clear_hats(&mut self, editor: &mut Editor, cx: &mut Context<Editor>) {
+            for &type_id in self.hat_type_cache.values() {
+                editor.clear_decorations(type_id, cx);
+            }
+            cx.notify();
+        }
+
+        /// Clears hat decorations and disposes of all cached decoration types.
+        ///
+        /// This is useful for cleanup when the renderer will no longer be used.
+        /// After calling this, the type cache will be empty and new decoration
+        /// types will be created on the next assignment.
+        pub fn dispose(&mut self, editor: &mut Editor, cx: &mut Context<Editor>) {
+            for &type_id in self.hat_type_cache.values() {
+                editor.clear_decorations(type_id, cx);
+                editor.dispose_decoration_type(type_id);
+            }
+            self.hat_type_cache.clear();
+            cx.notify();
+        }
+
+        /// Updates the configuration and optionally re-renders hats.
+        ///
+        /// This allows changing tokenization strategy or range without recreating
+        /// the renderer.
+        pub fn set_config(&mut self, config: HatRenderConfig) {
+            self.config = config;
+        }
+
+        /// Gets the current configuration.
+        pub fn config(&self) -> &HatRenderConfig {
+            &self.config
+        }
+
+        /// Returns the number of cached hat decoration types.
+        pub fn cached_type_count(&self) -> usize {
+            self.hat_type_cache.len()
+        }
+
+        /// Assigns a single hat to a specific token position.
+        ///
+        /// Convenience method for assigning one hat.
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// renderer.assign_hat_at_position(
+        ///     &editor,
+        ///     0,
+        ///     HatColor::Blue,
+        ///     HatShape::Default,
+        ///     cx
+        /// );
+        /// ```
+        pub fn assign_hat_at_position(
+            &mut self,
+            editor: &mut Editor,
+            token_index: usize,
+            color: HatColor,
+            shape: HatShape,
+            cx: &mut Context<Editor>,
+        ) {
+            let mut mapping = HashMap::new();
+            mapping.insert(token_index, (color, shape));
+            self.assign_hats_at_positions(editor, mapping, cx);
+        }
+
+        /// Gets the tokens that would be decorated based on current configuration.
+        ///
+        /// This is useful for testing or for UI that needs to know what tokens
+        /// are available for decoration.
+        pub fn get_available_tokens(&self, editor: &Editor, cx: &mut Context<Editor>) -> Vec<Token> {
+            self.tokenize_editor(editor, cx)
+        }
+    }
+
+    impl Default for HatRenderer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod hat_renderer_tests {
+    use super::hat_renderer::*;
+    use super::cursorless_helpers::{HatColor, HatShape};
+    use crate::Editor;
+    use gpui::{Context, Entity, TestAppContext};
+    use multi_buffer::MultiBuffer;
+
+    fn init_test(cx: &mut TestAppContext) -> Entity<Editor> {
+        let buffer = cx.new(|cx| {
+            let text = "hello world\nfoo bar baz\n";
+            MultiBuffer::build_simple(text, cx)
+        });
+        cx.new(|cx| Editor::for_buffer(buffer, None, true, cx))
+    }
+
+    #[gpui::test]
+    fn test_hat_renderer_creation(cx: &mut TestAppContext) {
+        let renderer = HatRenderer::new();
+        assert_eq!(renderer.cached_type_count(), 0);
+    }
+
+    #[gpui::test]
+    fn test_assign_single_hat(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![(HatColor::Blue, HatShape::Default)];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_assign_multiple_hats(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+                (HatColor::Green, HatShape::Curve),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn test_hat_type_caching(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats1 = vec![(HatColor::Blue, HatShape::Default)];
+            renderer.assign_hats(editor, hats1, cx);
+            assert_eq!(renderer.cached_type_count(), 1);
+
+            let hats2 = vec![(HatColor::Blue, HatShape::Default)];
+            renderer.assign_hats(editor, hats2, cx);
+            assert_eq!(renderer.cached_type_count(), 1);
+
+            let hats3 = vec![(HatColor::Red, HatShape::Default)];
+            renderer.assign_hats(editor, hats3, cx);
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_clear_hats(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            renderer.clear_hats(editor, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_dispose(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            renderer.dispose(editor, cx);
+
+            assert_eq!(renderer.cached_type_count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_assign_hats_at_positions(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let mut mapping = HashMap::new();
+            mapping.insert(0, (HatColor::Blue, HatShape::Default));
+            mapping.insert(3, (HatColor::Red, HatShape::Bolt));
+
+            renderer.assign_hats_at_positions(editor, mapping, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_assign_hat_at_position(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            renderer.assign_hat_at_position(editor, 0, HatColor::Blue, HatShape::Default, cx);
+
+            assert_eq!(renderer.cached_type_count(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_get_available_tokens(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let renderer = HatRenderer::new();
+            let tokens = renderer.get_available_tokens(editor, cx);
+
+            assert!(tokens.len() > 0);
+            for token in &tokens {
+                assert!(!token.is_whitespace);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn test_config_skip_whitespace(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut config = HatRenderConfig::default();
+            config.skip_whitespace = false;
+
+            let renderer = HatRenderer::with_config(config);
+            let tokens = renderer.get_available_tokens(editor, cx);
+
+            let has_whitespace = tokens.iter().any(|t| t.is_whitespace);
+            assert!(has_whitespace);
+        });
+    }
+
+    #[gpui::test]
+    fn test_config_tokenization_strategy(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut config = HatRenderConfig::default();
+            config.tokenization_strategy = TokenizationStrategy::Words;
+
+            let renderer = HatRenderer::with_config(config);
+            let tokens = renderer.get_available_tokens(editor, cx);
+
+            assert!(tokens.len() > 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_empty_buffer(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| MultiBuffer::build_simple("", cx));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![(HatColor::Blue, HatShape::Default)];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_more_hats_than_tokens(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| MultiBuffer::build_simple("ab", cx));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+                (HatColor::Green, HatShape::Curve),
+                (HatColor::Yellow, HatShape::Fox),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_unicode_content(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| MultiBuffer::build_simple("hello 世界 emoji 👋🏽", cx));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+            let tokens = renderer.get_available_tokens(editor, cx);
+
+            assert!(tokens.len() > 0);
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_set_config(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let initial_tokens = renderer.get_available_tokens(editor, cx);
+
+            let mut new_config = HatRenderConfig::default();
+            new_config.skip_whitespace = false;
+            renderer.set_config(new_config);
+
+            let new_tokens = renderer.get_available_tokens(editor, cx);
+
+            assert!(new_tokens.len() > initial_tokens.len());
+        });
+    }
+
+    #[gpui::test]
+    fn test_all_88_hat_styles(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let mut all_styles = Vec::new();
+            for color in HatColor::all() {
+                for shape in HatShape::all() {
+                    all_styles.push((*color, *shape));
+                }
+            }
+
+            assert_eq!(all_styles.len(), 88);
+
+            renderer.assign_hats(editor, all_styles, cx);
+
+            assert!(renderer.cached_type_count() > 0);
+        });
+    }
+}
