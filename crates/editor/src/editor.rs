@@ -56,7 +56,7 @@ pub mod test;
 
 pub(crate) use actions::*;
 pub use decorations::{
-    Decoration, DecorationContent, DecorationId, DecorationRangeBehavior,
+    cursorless_helpers, Decoration, DecorationContent, DecorationId, DecorationRangeBehavior,
     DecorationRegistry, DecorationRegistryStats, DecorationRenderOptions,
     DecorationRenderOptionsBuilder, DecorationStyle, DecorationType, DecorationTypeId,
     ThemedDecorationStyle,

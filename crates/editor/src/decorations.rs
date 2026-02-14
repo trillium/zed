@@ -3673,3 +3673,492 @@ mod integration_tests {
         });
     }
 }
+
+/// High-level wrapper API for creating decorations with Cursorless-specific helpers.
+///
+/// This module provides ergonomic builders and utilities for common decoration use cases,
+/// particularly for Cursorless hat decorations and flash highlights.
+pub mod cursorless_helpers {
+    use super::{DecorationRenderOptions, DecorationRenderOptionsBuilder};
+    use gpui::Hsla;
+
+    /// Hat colors supported by Cursorless.
+    ///
+    /// These colors can be combined with any shape to create 88 total hat styles
+    /// (8 colors × 11 shapes).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum HatColor {
+        Default,
+        Blue,
+        Green,
+        Red,
+        Pink,
+        Yellow,
+        UserColor1,
+        UserColor2,
+    }
+
+    impl HatColor {
+        /// Get the hex color code for this hat color.
+        ///
+        /// These are the default colors; they can be customized by themes.
+        pub fn to_hex(self) -> &'static str {
+            match self {
+                HatColor::Default => "#666666",
+                HatColor::Blue => "#0000ff",
+                HatColor::Green => "#00ff00",
+                HatColor::Red => "#ff0000",
+                HatColor::Pink => "#ff00ff",
+                HatColor::Yellow => "#ffff00",
+                HatColor::UserColor1 => "#00ffff",
+                HatColor::UserColor2 => "#ffa500",
+            }
+        }
+
+        /// Get all available hat colors.
+        pub fn all() -> &'static [HatColor] {
+            &[
+                HatColor::Default,
+                HatColor::Blue,
+                HatColor::Green,
+                HatColor::Red,
+                HatColor::Pink,
+                HatColor::Yellow,
+                HatColor::UserColor1,
+                HatColor::UserColor2,
+            ]
+        }
+    }
+
+    /// Hat shapes supported by Cursorless.
+    ///
+    /// Each shape has an SVG path definition that can be colored.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum HatShape {
+        Default,
+        Bolt,
+        Curve,
+        Fox,
+        Frame,
+        Play,
+        Wing,
+        Hole,
+        Ex,
+        Crosshairs,
+        Eye,
+    }
+
+    impl HatShape {
+        /// Get the SVG path data for this shape.
+        ///
+        /// The path uses a 12×9 viewBox and includes a fill placeholder.
+        fn to_svg_path(self) -> &'static str {
+            match self {
+                HatShape::Default => "M6 9C9.31371 9 12 6.98528 12 4.5C12 2.01472 9.31371 0 6 0C2.68629 0 0 2.01472 0 4.5C0 6.98528 2.68629 9 6 9Z",
+                HatShape::Curve => "M6.00016 3.5C10 3.5 12 7.07378 12 9C12 4 10.5 0 6.00016 0C1.50032 0 0 4 0 9C0 7.07378 2.00032 3.5 6.00016 3.5Z",
+                HatShape::Play => "M1.5 0.5L10.5 4.5L1.5 8.5V0.5Z",
+                HatShape::Bolt => "M6.5 0L3.5 5H6L5.5 9L8.5 4H6.5L6.5 0Z",
+                HatShape::Fox => "M6 0L1 4L3 6L6 4L9 6L11 4L6 0ZM6 5L4 7L6 9L8 7L6 5Z",
+                HatShape::Frame => "M1 1V8H11V1H1ZM2 2H10V7H2V2Z",
+                HatShape::Wing => "M0 4.5C0 4.5 2 0 6 0C10 0 12 4.5 12 4.5C12 4.5 10 9 6 9C2 9 0 4.5 0 4.5ZM6 2C4.5 2 3 3.5 3 4.5C3 5.5 4.5 7 6 7C7.5 7 9 5.5 9 4.5C9 3.5 7.5 2 6 2Z",
+                HatShape::Hole => "M6 9C9.31371 9 12 6.98528 12 4.5C12 2.01472 9.31371 0 6 0C2.68629 0 0 2.01472 0 4.5C0 6.98528 2.68629 9 6 9ZM6 6C7.10457 6 8 5.32843 8 4.5C8 3.67157 7.10457 3 6 3C4.89543 3 4 3.67157 4 4.5C4 5.32843 4.89543 6 6 6Z",
+                HatShape::Ex => "M2 0L6 4L10 0L12 2L8 4.5L12 7L10 9L6 5L2 9L0 7L4 4.5L0 2L2 0Z",
+                HatShape::Crosshairs => "M6 0V3M6 6V9M0 4.5H3M9 4.5H12M6 6C7.10457 6 8 5.32843 8 4.5C8 3.67157 7.10457 3 6 3C4.89543 3 4 3.67157 4 4.5C4 5.32843 4.89543 6 6 6Z",
+                HatShape::Eye => "M6 2C3 2 0.5 4.5 0.5 4.5C0.5 4.5 3 7 6 7C9 7 11.5 4.5 11.5 4.5C11.5 4.5 9 2 6 2ZM6 6C5.17157 6 4.5 5.32843 4.5 4.5C4.5 3.67157 5.17157 3 6 3C6.82843 3 7.5 3.67157 7.5 4.5C7.5 5.32843 6.82843 6 6 6Z",
+            }
+        }
+
+        /// Get all available hat shapes.
+        pub fn all() -> &'static [HatShape] {
+            &[
+                HatShape::Default,
+                HatShape::Bolt,
+                HatShape::Curve,
+                HatShape::Fox,
+                HatShape::Frame,
+                HatShape::Play,
+                HatShape::Wing,
+                HatShape::Hole,
+                HatShape::Ex,
+                HatShape::Crosshairs,
+                HatShape::Eye,
+            ]
+        }
+    }
+
+    /// Flash highlight styles for Cursorless visual feedback.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum FlashStyle {
+        PendingDelete,
+        Referenced,
+        PendingModification0,
+        PendingModification1,
+        JustAdded,
+    }
+
+    impl FlashStyle {
+        /// Get the HSLA color for this flash style.
+        ///
+        /// Returns (light_theme_color, dark_theme_color).
+        pub fn to_colors(self) -> (Hsla, Hsla) {
+            match self {
+                FlashStyle::PendingDelete => (
+                    Hsla { h: 0.0, s: 1.0, l: 0.9, a: 0.54 },
+                    Hsla { h: 0.0, s: 1.0, l: 0.5, a: 0.54 },
+                ),
+                FlashStyle::Referenced => (
+                    Hsla { h: 0.6, s: 1.0, l: 0.9, a: 0.54 },
+                    Hsla { h: 0.6, s: 1.0, l: 0.5, a: 0.54 },
+                ),
+                FlashStyle::PendingModification0 => (
+                    Hsla { h: 0.15, s: 1.0, l: 0.9, a: 0.54 },
+                    Hsla { h: 0.15, s: 1.0, l: 0.5, a: 0.54 },
+                ),
+                FlashStyle::PendingModification1 => (
+                    Hsla { h: 0.08, s: 1.0, l: 0.9, a: 0.54 },
+                    Hsla { h: 0.08, s: 1.0, l: 0.5, a: 0.54 },
+                ),
+                FlashStyle::JustAdded => (
+                    Hsla { h: 0.33, s: 1.0, l: 0.9, a: 0.54 },
+                    Hsla { h: 0.33, s: 1.0, l: 0.5, a: 0.54 },
+                ),
+            }
+        }
+    }
+
+    /// Create a hat decoration with the specified color and shape.
+    ///
+    /// This generates an SVG data URI with the appropriate color and returns
+    /// a decoration render options configured for hat positioning.
+    ///
+    /// The hat is positioned above the character using negative margins.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use editor::decorations::cursorless_helpers::{create_hat, HatColor, HatShape};
+    ///
+    /// let blue_hat = create_hat(HatColor::Blue, HatShape::Default);
+    /// let registry = DecorationRegistry::new();
+    /// let type_id = registry.create_decoration_type(blue_hat);
+    /// ```
+    pub fn create_hat(color: HatColor, shape: HatShape) -> DecorationRenderOptions {
+        let svg_data_uri = create_hat_svg(color, shape);
+
+        DecorationRenderOptionsBuilder::before()
+            .with_svg(svg_data_uri, 12.0, 9.0)
+            .with_margin("-9px -12px 0 0")
+            .with_z_index(100)
+            .build()
+    }
+
+    /// Generate an SVG data URI for a hat with the specified color and shape.
+    ///
+    /// The SVG uses a 12×9 viewBox and includes the colored path.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let svg = create_hat_svg(HatColor::Red, HatShape::Curve);
+    /// assert!(svg.starts_with("data:image/svg+xml;utf8,"));
+    /// ```
+    pub fn create_hat_svg(color: HatColor, shape: HatShape) -> String {
+        let path = shape.to_svg_path();
+        let color_hex = color.to_hex();
+
+        format!(
+            "data:image/svg+xml;utf8,<svg width=\"1em\" height=\"1em\" viewBox=\"0 0 12 9\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"{}\" fill=\"{}\"/></svg>",
+            path,
+            color_hex
+        )
+    }
+
+    /// Create a token-level flash highlight decoration.
+    ///
+    /// This creates a background color decoration for highlighting specific character ranges.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use editor::decorations::cursorless_helpers::{create_flash_highlight, FlashStyle};
+    ///
+    /// let pending_delete = create_flash_highlight(FlashStyle::PendingDelete);
+    /// ```
+    pub fn create_flash_highlight(style: FlashStyle) -> DecorationRenderOptions {
+        let (light_color, dark_color) = style.to_colors();
+
+        let mut light_style = super::DecorationStyle::default();
+        light_style.background_color = Some(light_color);
+
+        let mut dark_style = super::DecorationStyle::default();
+        dark_style.background_color = Some(dark_color);
+
+        DecorationRenderOptionsBuilder::range()
+            .with_light_style(light_style)
+            .with_dark_style(dark_style)
+            .build()
+    }
+
+    /// Create a whole-line flash highlight decoration.
+    ///
+    /// This creates a background color decoration that extends to the full width of the line.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use editor::decorations::cursorless_helpers::{create_line_highlight, FlashStyle};
+    ///
+    /// let referenced_line = create_line_highlight(FlashStyle::Referenced);
+    /// ```
+    pub fn create_line_highlight(style: FlashStyle) -> DecorationRenderOptions {
+        let (light_color, dark_color) = style.to_colors();
+
+        let mut light_style = super::DecorationStyle::default();
+        light_style.background_color = Some(light_color);
+
+        let mut dark_style = super::DecorationStyle::default();
+        dark_style.background_color = Some(dark_color);
+
+        DecorationRenderOptionsBuilder::whole_line()
+            .with_light_style(light_style)
+            .with_dark_style(dark_style)
+            .build()
+    }
+
+    /// Create all 88 hat decoration types (8 colors × 11 shapes).
+    ///
+    /// Returns a vector of tuples containing (color, shape, decoration_options).
+    ///
+    /// This is useful for pre-creating all hat types that Cursorless needs.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use editor::decorations::cursorless_helpers::create_all_hat_types;
+    /// use editor::decorations::DecorationRegistry;
+    ///
+    /// let registry = DecorationRegistry::new();
+    /// let hat_types = create_all_hat_types();
+    ///
+    /// for (color, shape, options) in hat_types {
+    ///     let type_id = registry.create_decoration_type(options);
+    ///     println!("Created {:?}-{:?} hat with type_id {:?}", color, shape, type_id);
+    /// }
+    /// ```
+    pub fn create_all_hat_types() -> Vec<(HatColor, HatShape, DecorationRenderOptions)> {
+        let mut hat_types = Vec::with_capacity(88);
+
+        for &color in HatColor::all() {
+            for &shape in HatShape::all() {
+                let options = create_hat(color, shape);
+                hat_types.push((color, shape, options));
+            }
+        }
+
+        hat_types
+    }
+
+    /// Create all flash highlight decoration types.
+    ///
+    /// Returns a vector of tuples containing (style, token_options, line_options).
+    ///
+    /// Each flash style gets both a token-level and line-level decoration type.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use editor::decorations::cursorless_helpers::create_all_flash_types;
+    ///
+    /// let flash_types = create_all_flash_types();
+    /// for (style, token_opts, line_opts) in flash_types {
+    ///     println!("Created {:?} flash style", style);
+    /// }
+    /// ```
+    pub fn create_all_flash_types() -> Vec<(FlashStyle, DecorationRenderOptions, DecorationRenderOptions)> {
+        vec![
+            FlashStyle::PendingDelete,
+            FlashStyle::Referenced,
+            FlashStyle::PendingModification0,
+            FlashStyle::PendingModification1,
+            FlashStyle::JustAdded,
+        ]
+        .into_iter()
+        .map(|style| {
+            let token_opts = create_flash_highlight(style);
+            let line_opts = create_line_highlight(style);
+            (style, token_opts, line_opts)
+        })
+        .collect()
+    }
+}
+
+#[cfg(test)]
+mod cursorless_helpers_tests {
+    use super::cursorless_helpers::*;
+    use super::{DecorationType, DecorationContent};
+
+    #[test]
+    fn test_hat_color_to_hex() {
+        assert_eq!(HatColor::Default.to_hex(), "#666666");
+        assert_eq!(HatColor::Blue.to_hex(), "#0000ff");
+        assert_eq!(HatColor::Green.to_hex(), "#00ff00");
+        assert_eq!(HatColor::Red.to_hex(), "#ff0000");
+        assert_eq!(HatColor::Pink.to_hex(), "#ff00ff");
+        assert_eq!(HatColor::Yellow.to_hex(), "#ffff00");
+        assert_eq!(HatColor::UserColor1.to_hex(), "#00ffff");
+        assert_eq!(HatColor::UserColor2.to_hex(), "#ffa500");
+    }
+
+    #[test]
+    fn test_hat_colors_all() {
+        let colors = HatColor::all();
+        assert_eq!(colors.len(), 8);
+        assert!(colors.contains(&HatColor::Blue));
+        assert!(colors.contains(&HatColor::Red));
+    }
+
+    #[test]
+    fn test_hat_shapes_all() {
+        let shapes = HatShape::all();
+        assert_eq!(shapes.len(), 11);
+        assert!(shapes.contains(&HatShape::Default));
+        assert!(shapes.contains(&HatShape::Curve));
+    }
+
+    #[test]
+    fn test_create_hat_svg() {
+        let svg = create_hat_svg(HatColor::Blue, HatShape::Default);
+
+        assert!(svg.starts_with("data:image/svg+xml;utf8,"));
+        assert!(svg.contains("#0000ff"));
+        assert!(svg.contains("viewBox=\"0 0 12 9\""));
+        assert!(svg.contains("<path"));
+    }
+
+    #[test]
+    fn test_create_hat_svg_different_shapes() {
+        let default_svg = create_hat_svg(HatColor::Red, HatShape::Default);
+        let curve_svg = create_hat_svg(HatColor::Red, HatShape::Curve);
+
+        assert_ne!(default_svg, curve_svg);
+        assert!(default_svg.contains("#ff0000"));
+        assert!(curve_svg.contains("#ff0000"));
+    }
+
+    #[test]
+    fn test_create_hat() {
+        let hat = create_hat(HatColor::Blue, HatShape::Default);
+
+        assert_eq!(hat.decoration_type, DecorationType::Before);
+
+        match &hat.content {
+            Some(DecorationContent::Svg { source, width_px, height_px }) => {
+                assert!(source.starts_with("data:image/svg+xml;utf8,"));
+                assert!(source.contains("#0000ff"));
+                assert_eq!(*width_px, 12.0);
+                assert_eq!(*height_px, 9.0);
+            }
+            _ => panic!("Expected SVG content"),
+        }
+
+        assert_eq!(hat.style.base.margin, Some("-9px -12px 0 0".to_string()));
+        assert_eq!(hat.style.base.z_index, Some(100));
+    }
+
+    #[test]
+    fn test_flash_style_colors() {
+        let (light, dark) = FlashStyle::PendingDelete.to_colors();
+
+        assert_eq!(light.h, 0.0);
+        assert_eq!(dark.h, 0.0);
+        assert!(light.l > dark.l);
+    }
+
+    #[test]
+    fn test_create_flash_highlight() {
+        let flash = create_flash_highlight(FlashStyle::Referenced);
+
+        assert_eq!(flash.decoration_type, DecorationType::Range);
+        assert!(flash.style.light.is_some());
+        assert!(flash.style.dark.is_some());
+
+        let light_style = flash.style.light.as_ref().unwrap();
+        let dark_style = flash.style.dark.as_ref().unwrap();
+
+        assert!(light_style.background_color.is_some());
+        assert!(dark_style.background_color.is_some());
+    }
+
+    #[test]
+    fn test_create_line_highlight() {
+        let line = create_line_highlight(FlashStyle::JustAdded);
+
+        assert_eq!(line.decoration_type, DecorationType::WholeLine);
+        assert!(line.style.light.is_some());
+        assert!(line.style.dark.is_some());
+    }
+
+    #[test]
+    fn test_create_all_hat_types() {
+        let hat_types = create_all_hat_types();
+
+        assert_eq!(hat_types.len(), 88);
+
+        let first = &hat_types[0];
+        assert_eq!(first.2.decoration_type, DecorationType::Before);
+
+        let colors: Vec<_> = hat_types.iter().map(|(c, _, _)| c).collect();
+        assert!(colors.contains(&&HatColor::Blue));
+        assert!(colors.contains(&&HatColor::Red));
+
+        let shapes: Vec<_> = hat_types.iter().map(|(_, s, _)| s).collect();
+        assert!(shapes.contains(&&HatShape::Default));
+        assert!(shapes.contains(&&HatShape::Curve));
+    }
+
+    #[test]
+    fn test_create_all_flash_types() {
+        let flash_types = create_all_flash_types();
+
+        assert_eq!(flash_types.len(), 5);
+
+        for (style, token_opts, line_opts) in flash_types {
+            assert_eq!(token_opts.decoration_type, DecorationType::Range);
+            assert_eq!(line_opts.decoration_type, DecorationType::WholeLine);
+
+            let (light_color, dark_color) = style.to_colors();
+
+            if let Some(light_style) = &token_opts.style.light {
+                assert_eq!(light_style.background_color, Some(light_color));
+            }
+
+            if let Some(dark_style) = &token_opts.style.dark {
+                assert_eq!(dark_style.background_color, Some(dark_color));
+            }
+        }
+    }
+
+    #[test]
+    fn test_hat_types_are_unique() {
+        let hat_types = create_all_hat_types();
+
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+
+        for (color, shape, _) in hat_types {
+            let key = (color, shape);
+            assert!(!seen.contains(&key), "Duplicate hat type: {:?}", key);
+            seen.insert(key);
+        }
+    }
+
+    #[test]
+    fn test_different_colors_produce_different_svgs() {
+        let blue = create_hat_svg(HatColor::Blue, HatShape::Default);
+        let red = create_hat_svg(HatColor::Red, HatShape::Default);
+
+        assert_ne!(blue, red);
+        assert!(blue.contains("#0000ff"));
+        assert!(red.contains("#ff0000"));
+    }
+}
