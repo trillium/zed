@@ -25139,6 +25139,87 @@ impl Editor {
         self.load_diff_task.clone()
     }
 
+    /// Create a new decoration type with the given render options.
+    ///
+    /// This returns a `DecorationTypeId` that can be used to create decoration instances.
+    /// The decoration type defines how decorations of this type are rendered (e.g., SVG content, styling).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let hat_type = editor.create_decoration_type(
+    ///     DecorationRenderOptionsBuilder::before()
+    ///         .with_svg("data:image/svg+xml;utf8,<svg>...</svg>", 12.0, 9.0)
+    ///         .with_margin("-9px -12px 0 0")
+    ///         .build()
+    /// );
+    /// ```
+    pub fn create_decoration_type(&mut self, options: DecorationRenderOptions) -> DecorationTypeId {
+        self.decoration_registry.create_decoration_type(options)
+    }
+
+    /// Set decorations of a specific type for this editor.
+    ///
+    /// This replaces any existing decorations of the given type.
+    /// Each decoration specifies a position or range using buffer anchors,
+    /// which automatically track through text edits.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let decorations = vec![
+    ///     Decoration::point(DecorationId(1), type_id, anchor1),
+    ///     Decoration::point(DecorationId(2), type_id, anchor2),
+    /// ];
+    /// editor.set_decorations(type_id, decorations, cx);
+    /// ```
+    pub fn set_decorations(
+        &mut self,
+        type_id: DecorationTypeId,
+        decorations: Vec<Decoration>,
+        cx: &mut Context<Self>,
+    ) {
+        let editor_id = cx.entity_id();
+        self.decoration_registry.set_decorations(editor_id, type_id, decorations);
+        cx.notify();
+    }
+
+    /// Clear all decorations of a specific type from this editor.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// editor.clear_decorations(type_id, cx);
+    /// ```
+    pub fn clear_decorations(&mut self, type_id: DecorationTypeId, cx: &mut Context<Self>) {
+        let editor_id = cx.entity_id();
+        self.decoration_registry.set_decorations(editor_id, type_id, vec![]);
+        cx.notify();
+    }
+
+    /// Remove a decoration type from the registry.
+    ///
+    /// This removes the type definition and all decoration instances of this type
+    /// across all editors.
+    ///
+    /// Returns `true` if the type was removed, `false` if it didn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// editor.dispose_decoration_type(type_id);
+    /// ```
+    pub fn dispose_decoration_type(&mut self, type_id: DecorationTypeId) -> bool {
+        self.decoration_registry.dispose_decoration_type(type_id)
+    }
+
+    /// Get statistics about the decoration registry.
+    ///
+    /// Useful for debugging and monitoring memory usage.
+    pub fn decoration_stats(&self) -> DecorationRegistryStats {
+        self.decoration_registry.stats()
+    }
+
     fn read_metadata_from_db(
         &mut self,
         item_id: u64,
