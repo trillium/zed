@@ -1,0 +1,134 @@
+interface decoration {
+    use common.{range};
+
+    /// Type of decoration positioning relative to text.
+    enum decoration-type {
+        /// Content rendered before a character position.
+        before,
+        /// Content rendered after a character position.
+        after,
+        /// Highlight applied to a range of text.
+        range,
+        /// Highlight applied to entire lines.
+        whole-line,
+    }
+
+    /// Controls how decorations behave at range boundaries.
+    enum decoration-range-behavior {
+        /// Range includes text inserted at both start and end positions.
+        open-open,
+        /// Range excludes text inserted at start, includes at end.
+        open-closed,
+        /// Range includes text inserted at start, excludes at end.
+        closed-open,
+        /// Range excludes text inserted at both start and end positions.
+        closed-closed,
+    }
+
+    /// Visual content to render as part of a decoration.
+    variant decoration-content {
+        /// Plain text content.
+        text(string),
+        /// SVG image from a data URI.
+        svg(decoration-svg),
+        /// Image from a file path or data URI.
+        image(decoration-image),
+    }
+
+    /// SVG decoration content.
+    record decoration-svg {
+        /// SVG source - data URI or file path.
+        source: string,
+        /// Width in pixels.
+        width-px: f32,
+        /// Height in pixels.
+        height-px: f32,
+    }
+
+    /// Image decoration content.
+    record decoration-image {
+        /// Image source - data URI or file path.
+        source: string,
+        /// Width in pixels.
+        width-px: f32,
+        /// Height in pixels.
+        height-px: f32,
+    }
+
+    /// Color in HSLA format.
+    record color {
+        /// Hue (0.0-1.0).
+        h: f32,
+        /// Saturation (0.0-1.0).
+        s: f32,
+        /// Lightness (0.0-1.0).
+        l: f32,
+        /// Alpha (0.0-1.0).
+        a: f32,
+    }
+
+    /// Styling properties for decorations.
+    record decoration-style {
+        /// Background color for range and whole-line decorations.
+        background-color: option<color>,
+        /// Border color (format: "top right bottom left" or single color).
+        border-color: option<string>,
+        /// Border style (format: "top right bottom left" or single style).
+        border-style: option<string>,
+        /// Border width (e.g., "1px").
+        border-width: option<string>,
+        /// Border radius (format: "top-left top-right bottom-right bottom-left").
+        border-radius: option<string>,
+        /// CSS margin for positioning (e.g., "-20px -10px 0 0").
+        margin: option<string>,
+        /// Z-index for layering.
+        z-index: option<s32>,
+    }
+
+    /// Theme-specific decoration styling.
+    record themed-decoration-style {
+        /// Base style used when theme-specific styles are not available.
+        base: decoration-style,
+        /// Override style for light theme.
+        light: option<decoration-style>,
+        /// Override style for dark theme.
+        dark: option<decoration-style>,
+    }
+
+    /// Complete render options for a decoration type.
+    record decoration-render-options {
+        /// Type of decoration.
+        decoration-type: decoration-type,
+        /// Optional content to render.
+        content: option<decoration-content>,
+        /// Themed styling for the decoration.
+        style: themed-decoration-style,
+        /// How the decoration behaves at range boundaries.
+        range-behavior: decoration-range-behavior,
+    }
+
+    /// Unique identifier for a decoration type.
+    type decoration-type-id = u64;
+
+    /// A decoration instance in a buffer.
+    record decoration {
+        /// Range where the decoration is applied.
+        range: range,
+    }
+
+    /// Unique identifier for a decoration instance.
+    type decoration-id = u64;
+
+    /// Creates a new decoration type with the specified render options.
+    /// Returns a decoration type ID that can be used to set decorations.
+    create-decoration-type: func(options: decoration-render-options) -> decoration-type-id;
+
+    /// Sets decorations of a specific type in the active editor.
+    /// Replaces any existing decorations of this type.
+    /// Returns a list of decoration IDs for the newly created decorations.
+    set-decorations: func(type-id: decoration-type-id, decorations: list<decoration>) -> list<decoration-id>;
+
+    /// Disposes a decoration type and all its associated decorations.
+    /// Returns true if the type was found and disposed, false otherwise.
+    dispose-decoration-type: func(type-id: decoration-type-id) -> bool;
+}

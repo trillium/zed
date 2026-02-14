@@ -3,6 +3,7 @@ package zed:extension;
 world extension {
     import context-server;
     import dap;
+    import decoration;
     import github;
     import http-client;
     import platform;
