@@ -3138,4 +3138,538 @@ mod integration_tests {
             assert_eq!(buffer_snapshot.text(), "01234ij");
         });
     }
+
+    #[gpui::test]
+    async fn test_range_behavior_closed_closed(cx: &mut TestAppContext) {
+        // Test ClosedClosed: both boundaries don't expand when text is inserted at them
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .with_range_behavior(DecorationRangeBehavior::ClosedClosed)
+                .build()
+        );
+
+        // Create range decoration [10..20] with ClosedClosed behavior
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 10 (start boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([10..10]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // ClosedClosed: start stays at 10 (doesn't expand to include insertion)
+            assert_eq!(start_point, 0.point(10));
+            // End moves forward by 3
+            assert_eq!(end_point, 0.point(23));
+        });
+
+        // Insert text at position 23 (end boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([23..23]);
+            });
+            editor.insert("YYY", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start stays at 10
+            assert_eq!(start_point, 0.point(10));
+            // ClosedClosed: end stays at 23 (doesn't expand to include insertion)
+            assert_eq!(end_point, 0.point(23));
+            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_range_behavior_open_open(cx: &mut TestAppContext) {
+        // Test OpenOpen: both boundaries expand when text is inserted at them
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .with_range_behavior(DecorationRangeBehavior::OpenOpen)
+                .build()
+        );
+
+        // Create range decoration [10..20] with OpenOpen behavior
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 10 (start boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([10..10]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // OpenOpen: start moves to after insertion (expands)
+            assert_eq!(start_point, 0.point(13));
+            // End moves forward by 3
+            assert_eq!(end_point, 0.point(23));
+        });
+
+        // Insert text at position 23 (end boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([23..23]);
+            });
+            editor.insert("YYY", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start stays at 13
+            assert_eq!(start_point, 0.point(13));
+            // OpenOpen: end moves to after insertion (expands)
+            assert_eq!(end_point, 0.point(26));
+            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_range_behavior_closed_open(cx: &mut TestAppContext) {
+        // Test ClosedOpen: start doesn't expand, end does expand
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .with_range_behavior(DecorationRangeBehavior::ClosedOpen)
+                .build()
+        );
+
+        // Create range decoration [10..20] with ClosedOpen behavior
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 10 (start boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([10..10]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // ClosedOpen: start stays at 10 (doesn't expand)
+            assert_eq!(start_point, 0.point(10));
+            // End moves forward by 3
+            assert_eq!(end_point, 0.point(23));
+        });
+
+        // Insert text at position 23 (end boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([23..23]);
+            });
+            editor.insert("YYY", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start stays at 10
+            assert_eq!(start_point, 0.point(10));
+            // ClosedOpen: end moves to after insertion (expands)
+            assert_eq!(end_point, 0.point(26));
+            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_range_behavior_open_closed(cx: &mut TestAppContext) {
+        // Test OpenClosed: start expands, end doesn't expand
+        let buffer = cx.new(|cx| Buffer::local("0123456789abcdefghij", cx));
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                buffer.clone(),
+                [0..20].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::range()
+                .with_background_color(Hsla::blue())
+                .with_range_behavior(DecorationRangeBehavior::OpenClosed)
+                .build()
+        );
+
+        // Create range decoration [10..20] with OpenClosed behavior
+        let (editor_id, start_anchor, end_anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let behavior = registry.get_range_behavior(type_id).unwrap();
+            let (start_bias, end_bias) = behavior.to_bias();
+            let start = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(10), start_bias);
+            let end = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(20), end_bias);
+            (cx.entity_id(), start, end)
+        });
+
+        let decoration = Decoration::range(DecorationId(1), type_id, start_anchor, end_anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Insert text at position 10 (start boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([10..10]);
+            });
+            editor.insert("XXX", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // OpenClosed: start moves to after insertion (expands)
+            assert_eq!(start_point, 0.point(13));
+            // End moves forward by 3
+            assert_eq!(end_point, 0.point(23));
+        });
+
+        // Insert text at position 23 (end boundary)
+        editor.update(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges([23..23]);
+            });
+            editor.insert("YYY", window, cx);
+        });
+
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let start_point = decorations[0].start.to_point(&buffer_snapshot);
+            let end_point = decorations[0].end.as_ref().unwrap().to_point(&buffer_snapshot);
+
+            // Start stays at 13
+            assert_eq!(start_point, 0.point(13));
+            // OpenClosed: end stays at 23 (doesn't expand)
+            assert_eq!(end_point, 0.point(23));
+            assert_eq!(buffer_snapshot.text(), "0123456789XXXabcdefghijYYY");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_decoration_concurrent_insertions(cx: &mut TestAppContext) {
+        // Test decorations with concurrent insertions from multiple replicas
+        use language::BufferId;
+        use text::Buffer as TextBuffer;
+        use clock::ReplicaId;
+
+        // Create two separate text buffers with different replica IDs
+        let mut buffer1 = TextBuffer::new(ReplicaId::new(1), BufferId::new(1).unwrap(), "0123456789abcdefghij");
+        let mut buffer2 = TextBuffer::new(ReplicaId::new(2), BufferId::new(1).unwrap(), "0123456789abcdefghij");
+
+        // Create decoration anchor at position 10 in buffer1
+        let decoration_anchor = buffer1.anchor_before(10);
+
+        // Simulate concurrent edits:
+        // Replica 1 inserts at position 5
+        let op1 = buffer1.edit([(5..5, "AAA")]);
+        assert_eq!(buffer1.text(), "01234AAA56789abcdefghij");
+
+        // Replica 2 inserts at position 15
+        let op2 = buffer2.edit([(15..15, "BBB")]);
+        assert_eq!(buffer2.text(), "0123456789abcdeBBBfghij");
+
+        // Apply operations to converge the replicas
+        buffer1.apply_op(op2.clone());
+        buffer2.apply_op(op1);
+
+        // Both buffers should converge to the same state
+        assert_eq!(buffer1.text(), buffer2.text());
+        assert_eq!(buffer1.text(), "01234AAA56789abcdeBBBfghij");
+
+        // Verify the decoration anchor moved correctly after both edits
+        // Original position was 10, after insert at 5 (+3) it's at 13
+        // After insert at 15 (which is at 18 after first insert), position stays at 13
+        let final_position = decoration_anchor.to_offset(&buffer1);
+        assert_eq!(final_position, 13);
+
+        // Verify both buffers agree on anchor position
+        assert_eq!(decoration_anchor.to_offset(&buffer1), decoration_anchor.to_offset(&buffer2));
+    }
+
+    #[gpui::test]
+    async fn test_decoration_concurrent_deletions(cx: &mut TestAppContext) {
+        // Test decorations with concurrent deletions from multiple replicas
+        use language::BufferId;
+        use text::Buffer as TextBuffer;
+        use clock::ReplicaId;
+
+        // Create two separate text buffers with different replica IDs
+        let mut buffer1 = TextBuffer::new(ReplicaId::new(1), BufferId::new(1).unwrap(), "0123456789abcdefghij");
+        let mut buffer2 = TextBuffer::new(ReplicaId::new(2), BufferId::new(1).unwrap(), "0123456789abcdefghij");
+
+        // Create decoration anchor at position 10
+        let decoration_anchor = buffer1.anchor_before(10);
+
+        // Simulate concurrent deletions:
+        // Replica 1 deletes [3..6] (deletes "345")
+        let op1 = buffer1.edit([(3..6, "")]);
+        assert_eq!(buffer1.text(), "0126789abcdefghij");
+
+        // Replica 2 deletes [12..15] (deletes "cde")
+        let op2 = buffer2.edit([(12..15, "")]);
+        assert_eq!(buffer2.text(), "0123456789abfghij");
+
+        // Apply operations to converge the replicas
+        buffer1.apply_op(op2.clone());
+        buffer2.apply_op(op1);
+
+        // Both buffers should converge to the same state
+        assert_eq!(buffer1.text(), buffer2.text());
+        assert_eq!(buffer1.text(), "0126789abfghij");
+
+        // Verify the decoration anchor adjusted correctly
+        // Original position was 10, after delete [3..6] (-3) it's at 7
+        // After delete [12..15] (which is at [9..12] after first delete), position stays at 7
+        let final_position = decoration_anchor.to_offset(&buffer1);
+        assert_eq!(final_position, 7);
+
+        // Verify both buffers agree on anchor position
+        assert_eq!(decoration_anchor.to_offset(&buffer1), decoration_anchor.to_offset(&buffer2));
+        assert!(decoration_anchor.is_valid(&buffer1));
+    }
+
+    #[gpui::test]
+    async fn test_decoration_concurrent_mixed_edits(cx: &mut TestAppContext) {
+        // Test decorations with mixed concurrent insertions and deletions
+        use language::BufferId;
+        use text::Buffer as TextBuffer;
+        use clock::ReplicaId;
+
+        // Create three replicas for a more complex scenario
+        let mut buffer1 = TextBuffer::new(ReplicaId::new(1), BufferId::new(1).unwrap(), "abcdefghijklmnopqrstuvwxyz");
+        let mut buffer2 = TextBuffer::new(ReplicaId::new(2), BufferId::new(1).unwrap(), "abcdefghijklmnopqrstuvwxyz");
+        let mut buffer3 = TextBuffer::new(ReplicaId::new(3), BufferId::new(1).unwrap(), "abcdefghijklmnopqrstuvwxyz");
+
+        // Create decoration anchors at different positions
+        let anchor1 = buffer1.anchor_before(5);   // position 5
+        let anchor2 = buffer1.anchor_before(15);  // position 15
+        let anchor3 = buffer1.anchor_before(20);  // position 20
+
+        // Concurrent edits from three replicas:
+        // Replica 1: Insert at position 3
+        let op1 = buffer1.edit([(3..3, "XXX")]);
+        // Replica 2: Delete at positions [10..13]
+        let op2 = buffer2.edit([(10..13, "")]);
+        // Replica 3: Insert at position 18
+        let op3 = buffer3.edit([(18..18, "YYY")]);
+
+        // Apply all operations to all replicas to converge
+        buffer1.apply_op(op2.clone());
+        buffer1.apply_op(op3.clone());
+        buffer2.apply_op(op1.clone());
+        buffer2.apply_op(op3.clone());
+        buffer3.apply_op(op1);
+        buffer3.apply_op(op2);
+
+        // All buffers should converge
+        assert_eq!(buffer1.text(), buffer2.text());
+        assert_eq!(buffer2.text(), buffer3.text());
+
+        // Verify anchors maintain correct positions across all replicas
+        assert_eq!(anchor1.to_offset(&buffer1), anchor1.to_offset(&buffer2));
+        assert_eq!(anchor1.to_offset(&buffer2), anchor1.to_offset(&buffer3));
+        assert_eq!(anchor2.to_offset(&buffer1), anchor2.to_offset(&buffer2));
+        assert_eq!(anchor2.to_offset(&buffer2), anchor2.to_offset(&buffer3));
+        assert_eq!(anchor3.to_offset(&buffer1), anchor3.to_offset(&buffer2));
+        assert_eq!(anchor3.to_offset(&buffer2), anchor3.to_offset(&buffer3));
+
+        // All anchors should remain valid
+        assert!(anchor1.is_valid(&buffer1));
+        assert!(anchor2.is_valid(&buffer1));
+        assert!(anchor3.is_valid(&buffer1));
+    }
+
+    #[gpui::test]
+    async fn test_decoration_crdt_convergence_with_editor(cx: &mut TestAppContext) {
+        // Test that decorations maintain correct positions when editor applies
+        // operations from collaborative editing
+        use language::BufferId;
+        use text::Buffer as TextBuffer;
+        use clock::ReplicaId;
+
+        // Create a text buffer that will be used in the editor
+        let text_buffer = cx.new(|cx| {
+            let mut buffer = TextBuffer::new(
+                ReplicaId::new(1),
+                BufferId::new(1).unwrap(),
+                "line1\nline2\nline3\n",
+            );
+            buffer.into_language_buffer(cx)
+        });
+
+        let multibuffer = cx.new(|cx| {
+            let mut mb = MultiBuffer::new(language::Capability::ReadWrite);
+            mb.push_excerpts(
+                text_buffer.clone(),
+                [0..18].into_iter().map(multi_buffer::ExcerptRange::new),
+                cx,
+            );
+            mb
+        });
+
+        let editor = cx.add_window(|window, cx| {
+            let editor = Editor::for_buffer(multibuffer.clone(), None, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+            editor
+        });
+
+        let registry = DecorationRegistry::new();
+        let type_id = registry.create_decoration_type(
+            DecorationRenderOptionsBuilder::before()
+                .with_text("^")
+                .build()
+        );
+
+        // Create decoration at position 6 (start of "line2")
+        let (editor_id, anchor) = editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let anchor = buffer_snapshot.anchor_at(buffer_snapshot.offset_to_point(6), text::Bias::Left);
+            (cx.entity_id(), anchor)
+        });
+
+        let decoration = Decoration::point(DecorationId(1), type_id, anchor);
+        registry.set_decorations(editor_id, type_id, vec![decoration]);
+
+        // Simulate a remote edit that was applied to the underlying buffer
+        // This represents what would happen in collaborative editing
+        text_buffer.update(cx, |buffer, cx| {
+            buffer.edit([(0..0, "PREFIX\n")], None, cx);
+        });
+
+        // Verify the decoration anchor adjusted correctly
+        let decorations = registry.get_decorations(editor_id);
+        editor.update(cx, |editor, cx| {
+            let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+            let dec_point = decorations[0].start.to_point(&buffer_snapshot);
+            // Anchor should move from position 6 to position 13 (6 + 7 chars)
+            assert_eq!(dec_point, 0.point(13));
+            assert_eq!(buffer_snapshot.text(), "PREFIX\nline1\nline2\nline3\n");
+        });
+    }
 }
