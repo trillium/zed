@@ -2,17 +2,19 @@ use criterion::{Bencher, BenchmarkId, black_box, criterion_group, criterion_main
 use editor::{
     Editor, EditorMode, MultiBuffer,
     decorations::{
-        DecorationRegistry, DecorationRenderOptions,
-        DecorationContent, Decoration,
-        cursorless_helpers::{HatColor, HatShape, FlashStyle, create_hat, create_flash_highlight, create_all_hat_types},
-        hat_renderer::{HatRenderer, HatRenderConfig, TokenizationStrategy},
+        Decoration, DecorationContent, DecorationRegistry, DecorationRenderOptions,
+        cursorless_helpers::{
+            FlashStyle, HatColor, HatShape, create_all_hat_types, create_flash_highlight,
+            create_hat,
+        },
+        hat_renderer::{HatRenderConfig, HatRenderer, TokenizationStrategy},
         highlight_renderer::HighlightRenderer,
     },
 };
-use gpui::{TestAppContext, TestDispatcher, Focusable as _};
+use gpui::{Focusable as _, TestAppContext, TestDispatcher};
 use settings::SettingsStore;
-use text::Bias;
 use std::ops::Range;
+use text::Bias;
 
 /// Benchmark creating all 88 hat decoration types
 fn bench_create_all_hat_types(bencher: &mut Bencher<'_>) {
@@ -38,13 +40,12 @@ fn bench_create_flash_highlight(bencher: &mut Bencher<'_>) {
 /// Benchmark decoration registry: create type and set decorations
 fn bench_registry_create_and_set(bencher: &mut Bencher<'_>, cx: &TestAppContext) {
     let mut cx = cx.clone();
-    let buffer = cx.update(|cx| MultiBuffer::build_simple("Hello world\n".repeat(100).as_str(), cx));
+    let buffer =
+        cx.update(|cx| MultiBuffer::build_simple("Hello world\n".repeat(100).as_str(), cx));
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -67,7 +68,9 @@ fn bench_registry_create_and_set(bencher: &mut Bencher<'_>, cx: &TestAppContext)
                     },
                 ];
 
-                editor.decoration_registry.set_decorations(editor.entity_id, type_id, decorations);
+                editor
+                    .decoration_registry
+                    .set_decorations(editor.entity_id, type_id, decorations);
                 editor.decoration_registry.dispose_decoration_type(type_id);
             });
         });
@@ -82,9 +85,7 @@ fn bench_registry_set_1000_decorations(bencher: &mut Bencher<'_>, cx: &TestAppCo
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -96,15 +97,21 @@ fn bench_registry_set_1000_decorations(bencher: &mut Bencher<'_>, cx: &TestAppCo
                 let type_id = editor.decoration_registry.create_decoration_type(options);
 
                 let snapshot = buffer.read(cx).snapshot(cx);
-                let decorations: Vec<_> = (0..1000).map(|i| {
-                    let offset = (i * 10) % 9000;
-                    Decoration {
-                        start: snapshot.anchor_before(offset),
-                        end: snapshot.anchor_after(offset + 1),
-                    }
-                }).collect();
+                let decorations: Vec<_> = (0..1000)
+                    .map(|i| {
+                        let offset = (i * 10) % 9000;
+                        Decoration {
+                            start: snapshot.anchor_before(offset),
+                            end: snapshot.anchor_after(offset + 1),
+                        }
+                    })
+                    .collect();
 
-                editor.decoration_registry.set_decorations(editor.entity_id, type_id, black_box(decorations));
+                editor.decoration_registry.set_decorations(
+                    editor.entity_id,
+                    type_id,
+                    black_box(decorations),
+                );
                 editor.decoration_registry.dispose_decoration_type(type_id);
             });
         });
@@ -119,9 +126,7 @@ fn bench_hat_tokenization_100_chars(bencher: &mut Bencher<'_>, cx: &TestAppConte
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -144,9 +149,7 @@ fn bench_hat_tokenization_1000_chars(bencher: &mut Bencher<'_>, cx: &TestAppCont
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -169,9 +172,7 @@ fn bench_hat_tokenization_unicode(bencher: &mut Bencher<'_>, cx: &TestAppContext
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -195,9 +196,7 @@ fn bench_hat_renderer_assign_10_hats(bencher: &mut Bencher<'_>, cx: &TestAppCont
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -233,18 +232,28 @@ fn bench_hat_renderer_assign_50_hats(bencher: &mut Bencher<'_>, cx: &TestAppCont
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
 
-    let hats: Vec<_> = (0..50).map(|i| {
-        let colors = [HatColor::Blue, HatColor::Red, HatColor::Green, HatColor::Pink];
-        let shapes = [HatShape::Default, HatShape::Bolt, HatShape::Curve, HatShape::Fox];
-        (colors[i % 4], shapes[i % 4])
-    }).collect();
+    let hats: Vec<_> = (0..50)
+        .map(|i| {
+            let colors = [
+                HatColor::Blue,
+                HatColor::Red,
+                HatColor::Green,
+                HatColor::Pink,
+            ];
+            let shapes = [
+                HatShape::Default,
+                HatShape::Bolt,
+                HatShape::Curve,
+                HatShape::Fox,
+            ];
+            (colors[i % 4], shapes[i % 4])
+        })
+        .collect();
 
     bencher.iter(|| {
         let mut renderer = HatRenderer::new();
@@ -265,9 +274,7 @@ fn bench_highlight_renderer_add_10_highlights(bencher: &mut Bencher<'_>, cx: &Te
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -303,9 +310,7 @@ fn bench_highlight_renderer_add_100_highlights(bencher: &mut Bencher<'_>, cx: &T
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
@@ -318,10 +323,12 @@ fn bench_highlight_renderer_add_100_highlights(bencher: &mut Bencher<'_>, cx: &T
         FlashStyle::JustAdded,
     ];
 
-    let highlights: Vec<_> = (0..100).map(|i| {
-        let start = (i * 50) % 9000;
-        (start..start + 10, styles[i % 5], i % 2 == 0)
-    }).collect();
+    let highlights: Vec<_> = (0..100)
+        .map(|i| {
+            let start = (i * 50) % 9000;
+            (start..start + 10, styles[i % 5], i % 2 == 0)
+        })
+        .collect();
 
     bencher.iter(|| {
         let mut renderer = HighlightRenderer::new();
@@ -337,14 +344,13 @@ fn bench_highlight_renderer_add_100_highlights(bencher: &mut Bencher<'_>, cx: &T
 /// Benchmark combined: realistic Cursorless scenario
 fn bench_realistic_cursorless_scenario(bencher: &mut Bencher<'_>, cx: &TestAppContext) {
     let mut cx = cx.clone();
-    let text = "function example() {\n  const x = 1;\n  const y = 2;\n  return x + y;\n}\n".repeat(20);
+    let text =
+        "function example() {\n  const x = 1;\n  const y = 2;\n  return x + y;\n}\n".repeat(20);
     let buffer = cx.update(|cx| MultiBuffer::build_simple(&text, cx));
 
     let window_cx = cx.add_empty_window();
     let editor = window_cx.update(|window, cx| {
-        let editor = cx.new(|cx| {
-            Editor::new(EditorMode::full(), buffer.clone(), None, window, cx)
-        });
+        let editor = cx.new(|cx| Editor::new(EditorMode::full(), buffer.clone(), None, window, cx));
         window.focus(&editor.focus_handle(cx), cx);
         editor
     });
