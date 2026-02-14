@@ -140,3 +140,7 @@ harness = false
 [[bench]]
 name = "display_map"
 harness = false
+
+[[bench]]
+name = "decoration_performance"
+harness = false
