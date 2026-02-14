@@ -4242,11 +4242,6 @@ mod hat_tokenizer_tests {
     }
 }
 
-/*
-// TEMPORARILY COMMENTED OUT - See ticket zed-cursorless-ukb
-// hat_renderer module has multi-buffer API integration issues
-// that need to be fixed before it can compile.
-
 pub mod hat_renderer {
     //! Hat rendering system for Cursorless integration in Zed.
     //!
@@ -4286,8 +4281,10 @@ pub mod hat_renderer {
     use super::{Decoration, DecorationId, DecorationTypeId};
     use crate::Editor;
     use gpui::Context;
+    use multi_buffer::MultiBufferOffset;
     use std::collections::HashMap;
     use std::ops::Range;
+    use text::Rope;
 
     /// Represents a hat style as a color and shape combination.
     pub type HatStyle = (HatColor, HatShape);
@@ -4382,12 +4379,12 @@ pub mod hat_renderer {
         fn tokenize_editor(&self, editor: &Editor, cx: &mut Context<Editor>) -> Vec<Token> {
             let buffer = editor.buffer().read(cx);
             let snapshot = buffer.snapshot(cx);
-            let rope = snapshot.as_rope();
+            let rope = Rope::from(snapshot.text());
 
             let tokens = if let Some(ref range) = self.config.range {
-                tokenize_range(rope, self.config.tokenization_strategy, range.clone())
+                tokenize_range(&rope, self.config.tokenization_strategy, range.clone())
             } else {
-                super::hat_tokenizer::tokenize_rope(rope, self.config.tokenization_strategy)
+                super::hat_tokenizer::tokenize_rope(&rope, self.config.tokenization_strategy)
             };
 
             if self.config.skip_whitespace {
@@ -4449,7 +4446,7 @@ pub mod hat_renderer {
                 let token = &tokens[hat_index];
                 let type_id = self.get_or_create_hat_type(*hat_style, editor);
 
-                let anchor = snapshot.anchor_before(token.offset);
+                let anchor = snapshot.anchor_before(MultiBufferOffset(token.offset));
 
                 let decoration = Decoration::point(DecorationId(0), type_id, anchor);
 
@@ -4509,7 +4506,7 @@ pub mod hat_renderer {
             for (token_index, hat_style) in hat_mapping.iter() {
                 if let Some(token) = tokens.get(*token_index) {
                     let type_id = self.get_or_create_hat_type(*hat_style, editor);
-                    let anchor = snapshot.anchor_before(token.offset);
+                    let anchor = snapshot.anchor_before(MultiBufferOffset(token.offset));
 
                     let decoration = Decoration::point(DecorationId(0), type_id, anchor);
 
@@ -4901,8 +4898,7 @@ mod hat_renderer_tests {
         });
     }
 }
-*/
-// END COMMENTED OUT SECTION - hat_renderer and hat_renderer_tests
+// END hat_renderer and hat_renderer_tests
 
 /*
 // TEMPORARILY COMMENTED OUT - See ticket zed-cursorless-ukb
