@@ -2,7 +2,7 @@ use criterion::{Bencher, BenchmarkId, black_box, criterion_group, criterion_main
 use editor::{
     Editor, EditorMode, MultiBuffer,
     decorations::{
-        DecorationRegistry, DecorationRenderOptions, DecorationRenderOptionsBuilder,
+        DecorationRegistry, DecorationRenderOptions,
         DecorationContent, Decoration,
         cursorless_helpers::{HatColor, HatShape, FlashStyle, create_hat, create_flash_highlight, create_all_hat_types},
         hat_renderer::{HatRenderer, HatRenderConfig, TokenizationStrategy},

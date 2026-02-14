@@ -58,7 +58,7 @@ pub(crate) use actions::*;
 pub use decorations::{
     cursorless_helpers, Decoration, DecorationContent, DecorationId, DecorationRangeBehavior,
     DecorationRegistry, DecorationRegistryStats, DecorationRenderOptions,
-    DecorationRenderOptionsBuilder, DecorationStyle, DecorationType, DecorationTypeId,
+    DecorationStyle, DecorationType, DecorationTypeId,
     ThemedDecorationStyle,
 };
 pub use display_map::{
@@ -25148,10 +25148,19 @@ impl Editor {
     ///
     /// ```ignore
     /// let hat_type = editor.create_decoration_type(
-    ///     DecorationRenderOptionsBuilder::before()
-    ///         .with_svg("data:image/svg+xml;utf8,<svg>...</svg>", 12.0, 9.0)
-    ///         .with_margin("-9px -12px 0 0")
-    ///         .build()
+    ///     DecorationRenderOptions {
+    ///         decoration_type: DecorationType::Before,
+    ///         content: Some(DecorationContent::Svg {
+    ///             source: "data:image/svg+xml;utf8,<svg>...</svg>".into(),
+    ///             width_px: 12.0,
+    ///             height_px: 9.0,
+    ///         }),
+    ///         style: ThemedDecorationStyle::new(DecorationStyle {
+    ///             margin: Some("-9px -12px 0 0".to_string()),
+    ///             ..Default::default()
+    ///         }),
+    ///         range_behavior: DecorationRangeBehavior::default(),
+    ///     }
     /// );
     /// ```
     pub fn create_decoration_type(&mut self, options: DecorationRenderOptions) -> DecorationTypeId {
