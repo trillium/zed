@@ -3992,6 +3992,301 @@ pub mod cursorless_helpers {
     }
 }
 
+pub mod hat_tokenizer {
+    //! Hat tokenizer for Cursorless integration in Zed.
+    //!
+    //! This module provides tokenization functionality for breaking editor text into
+    //! individual units (graphemes, characters, or words) that can be decorated with
+    //! Cursorless hats.
+    //!
+    //! # Features
+    //!
+    //! - **Grapheme cluster support**: Properly handles complex Unicode including emojis,
+    //!   combining characters, and zero-width joiners
+    //! - **Multiple tokenization strategies**: Supports graphemes (recommended), characters,
+    //!   and words
+    //! - **Rope integration**: Works efficiently with Zed's rope-based text representation
+    //! - **Range support**: Can tokenize specific ranges of text for performance
+    //!
+    //! # Examples
+    //!
+    //! ```rust,ignore
+    //! use editor::decorations::hat_tokenizer::*;
+    //! use rope::Rope;
+    //!
+    //! let rope = Rope::from("hello world");
+    //! let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+    //!
+    //! for token in &tokens {
+    //!     println!("Token '{}' at offset {}", token.text, token.offset);
+    //! }
+    //!
+    //! let non_whitespace = filter_non_whitespace(tokens);
+    //! ```
+    //!
+    //! # Performance
+    //!
+    //! The tokenizer converts rope ranges to strings for processing. For large files,
+    //! consider using `tokenize_range` to process only visible portions of the editor.
+
+    use rope::Rope;
+    use std::ops::Range;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    /// Represents a single token in the editor text.
+    ///
+    /// A token is a logical unit of text that can receive a hat decoration.
+    /// Depending on the tokenization strategy, this could be a grapheme cluster,
+    /// a single character, or a word.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Token {
+        /// Byte offset of this token in the original text
+        pub offset: usize,
+        /// The text content of this token
+        pub text: String,
+        /// Whether this token consists entirely of whitespace
+        pub is_whitespace: bool,
+    }
+
+    impl Token {
+        /// Returns the length of this token in bytes.
+        pub fn len(&self) -> usize {
+            self.text.len()
+        }
+
+        /// Returns true if this token is empty.
+        pub fn is_empty(&self) -> bool {
+            self.text.is_empty()
+        }
+
+        /// Returns the byte offset immediately after this token.
+        pub fn end_offset(&self) -> usize {
+            self.offset + self.len()
+        }
+    }
+
+    /// Strategy for breaking text into tokens.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TokenizationStrategy {
+        /// Tokenize by grapheme clusters (recommended for Cursorless).
+        ///
+        /// This properly handles complex Unicode including:
+        /// - Multi-byte characters (e.g., "日")
+        /// - Emojis with modifiers (e.g., "👋🏽")
+        /// - Zero-width joiners (e.g., "👨‍👩‍👧‍👦")
+        /// - Combining characters (e.g., "é" as e + combining acute)
+        Graphemes,
+
+        /// Tokenize by individual characters.
+        ///
+        /// This breaks on Unicode scalar values (char boundaries),
+        /// which may split grapheme clusters.
+        Characters,
+
+        /// Tokenize by words.
+        ///
+        /// This uses Unicode word boundaries and preserves whitespace
+        /// as separate tokens between words.
+        Words,
+    }
+
+    /// A tokenizer for converting rope text into tokens.
+    ///
+    /// The tokenizer can process entire ropes or specific byte ranges.
+    pub struct Tokenizer<'a> {
+        rope: &'a Rope,
+        strategy: TokenizationStrategy,
+        range: Range<usize>,
+    }
+
+    impl<'a> Tokenizer<'a> {
+        /// Creates a new tokenizer for the entire rope.
+        pub fn new(rope: &'a Rope, strategy: TokenizationStrategy) -> Self {
+            let range = 0..rope.len();
+            Self {
+                rope,
+                strategy,
+                range,
+            }
+        }
+
+        /// Creates a new tokenizer for a specific byte range of the rope.
+        ///
+        /// This is more efficient than tokenizing the entire rope when you only
+        /// need tokens for a visible portion.
+        pub fn with_range(rope: &'a Rope, strategy: TokenizationStrategy, range: Range<usize>) -> Self {
+            Self {
+                rope,
+                strategy,
+                range,
+            }
+        }
+
+        /// Performs the tokenization and returns a vector of tokens.
+        pub fn tokenize(&self) -> Vec<Token> {
+            match self.strategy {
+                TokenizationStrategy::Graphemes => self.tokenize_graphemes(),
+                TokenizationStrategy::Characters => self.tokenize_characters(),
+                TokenizationStrategy::Words => self.tokenize_words(),
+            }
+        }
+
+        fn tokenize_graphemes(&self) -> Vec<Token> {
+            let mut tokens = Vec::new();
+            let text = self.rope_range_to_string();
+            let mut current_offset = self.range.start;
+
+            for grapheme in text.graphemes(true) {
+                let is_whitespace = grapheme.chars().all(|c| c.is_whitespace());
+                tokens.push(Token {
+                    offset: current_offset,
+                    text: grapheme.to_string(),
+                    is_whitespace,
+                });
+                current_offset += grapheme.len();
+            }
+
+            tokens
+        }
+
+        fn tokenize_characters(&self) -> Vec<Token> {
+            let mut tokens = Vec::new();
+            let text = self.rope_range_to_string();
+            let mut current_offset = self.range.start;
+
+            for ch in text.chars() {
+                let is_whitespace = ch.is_whitespace();
+                tokens.push(Token {
+                    offset: current_offset,
+                    text: ch.to_string(),
+                    is_whitespace,
+                });
+                current_offset += ch.len_utf8();
+            }
+
+            tokens
+        }
+
+        fn tokenize_words(&self) -> Vec<Token> {
+            let mut tokens = Vec::new();
+            let text = self.rope_range_to_string();
+            let mut current_offset = self.range.start;
+
+            for word in text.unicode_words() {
+                if let Some(word_start) = text[current_offset - self.range.start..].find(word) {
+                    let actual_offset = current_offset + word_start;
+
+                    if actual_offset > current_offset {
+                        let whitespace_text = &text[current_offset - self.range.start..actual_offset - self.range.start];
+                        tokens.push(Token {
+                            offset: current_offset,
+                            text: whitespace_text.to_string(),
+                            is_whitespace: true,
+                        });
+                    }
+
+                    tokens.push(Token {
+                        offset: actual_offset,
+                        text: word.to_string(),
+                        is_whitespace: false,
+                    });
+                    current_offset = actual_offset + word.len();
+                }
+            }
+
+            if current_offset < self.range.end {
+                let remaining_text = &text[current_offset - self.range.start..];
+                if !remaining_text.is_empty() {
+                    tokens.push(Token {
+                        offset: current_offset,
+                        text: remaining_text.to_string(),
+                        is_whitespace: true,
+                    });
+                }
+            }
+
+            tokens
+        }
+
+        fn rope_range_to_string(&self) -> String {
+            self.rope.chunks_in_range(self.range.clone()).collect()
+        }
+    }
+
+    /// Tokenizes an entire rope using the specified strategy.
+    ///
+    /// This is a convenience function that creates a tokenizer and calls `tokenize()`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let rope = Rope::from("hello world");
+    /// let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+    /// assert_eq!(tokens.len(), 11); // h e l l o [space] w o r l d
+    /// ```
+    pub fn tokenize_rope(rope: &Rope, strategy: TokenizationStrategy) -> Vec<Token> {
+        let tokenizer = Tokenizer::new(rope, strategy);
+        tokenizer.tokenize()
+    }
+
+    /// Tokenizes a specific byte range of a rope.
+    ///
+    /// This is more efficient than tokenizing the entire rope when you only need
+    /// tokens for a portion (e.g., visible lines in the editor).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let rope = Rope::from("hello world");
+    /// let tokens = tokenize_range(&rope, TokenizationStrategy::Graphemes, 0..5);
+    /// assert_eq!(tokens.len(), 5); // h e l l o
+    /// ```
+    pub fn tokenize_range(
+        rope: &Rope,
+        strategy: TokenizationStrategy,
+        range: Range<usize>,
+    ) -> Vec<Token> {
+        let tokenizer = Tokenizer::with_range(rope, strategy, range);
+        tokenizer.tokenize()
+    }
+
+    /// Finds the index of the token containing the given byte offset.
+    ///
+    /// Returns `None` if the offset is not within any token.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let rope = Rope::from("hello");
+    /// let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+    /// assert_eq!(find_token_at_offset(&tokens, 0), Some(0)); // 'h'
+    /// assert_eq!(find_token_at_offset(&tokens, 2), Some(2)); // 'l'
+    /// assert_eq!(find_token_at_offset(&tokens, 5), None);     // past end
+    /// ```
+    pub fn find_token_at_offset(tokens: &[Token], offset: usize) -> Option<usize> {
+        tokens
+            .iter()
+            .position(|token| token.offset <= offset && offset < token.end_offset())
+    }
+
+    /// Filters out whitespace tokens, keeping only non-whitespace tokens.
+    ///
+    /// This is useful for Cursorless, which typically only decorates non-whitespace
+    /// tokens with hats.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let rope = Rope::from("a b c");
+    /// let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+    /// let filtered = filter_non_whitespace(tokens);
+    /// assert_eq!(filtered.len(), 3); // a, b, c (spaces removed)
+    /// ```
+    pub fn filter_non_whitespace(tokens: Vec<Token>) -> Vec<Token> {
+        tokens.into_iter().filter(|t| !t.is_whitespace).collect()
+    }
+}
+
 #[cfg(test)]
 mod cursorless_helpers_tests {
     use super::cursorless_helpers::*;
@@ -4160,5 +4455,261 @@ mod cursorless_helpers_tests {
         assert_ne!(blue, red);
         assert!(blue.contains("#0000ff"));
         assert!(red.contains("#ff0000"));
+    }
+}
+
+#[cfg(test)]
+mod hat_tokenizer_tests {
+    use super::hat_tokenizer::*;
+    use rope::Rope;
+
+    #[test]
+    fn test_tokenize_ascii_graphemes() {
+        let rope = Rope::from("hello world");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 11);
+        assert_eq!(tokens[0].text, "h");
+        assert_eq!(tokens[0].offset, 0);
+        assert!(!tokens[0].is_whitespace);
+
+        assert_eq!(tokens[5].text, " ");
+        assert_eq!(tokens[5].offset, 5);
+        assert!(tokens[5].is_whitespace);
+
+        assert_eq!(tokens[6].text, "w");
+        assert_eq!(tokens[6].offset, 6);
+    }
+
+    #[test]
+    fn test_tokenize_emoji_graphemes() {
+        let rope = Rope::from("hello 👋 world");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        let wave_token = tokens.iter().find(|t| t.text == "👋").unwrap();
+        assert!(!wave_token.is_whitespace);
+        assert_eq!(wave_token.len(), 4);
+    }
+
+    #[test]
+    fn test_tokenize_complex_emoji_graphemes() {
+        let rope = Rope::from("🏳️‍🌈");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "🏳️‍🌈");
+        assert!(!tokens[0].is_whitespace);
+    }
+
+    #[test]
+    fn test_tokenize_combining_characters() {
+        let rope = Rope::from("é");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "é");
+    }
+
+    #[test]
+    fn test_tokenize_characters() {
+        let rope = Rope::from("ab cd");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Characters);
+
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].text, "a");
+        assert_eq!(tokens[1].text, "b");
+        assert_eq!(tokens[2].text, " ");
+        assert!(tokens[2].is_whitespace);
+        assert_eq!(tokens[3].text, "c");
+        assert_eq!(tokens[4].text, "d");
+    }
+
+    #[test]
+    fn test_tokenize_words() {
+        let rope = Rope::from("hello world");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Words);
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "hello");
+        assert!(!tokens[0].is_whitespace);
+        assert_eq!(tokens[1].text, " ");
+        assert!(tokens[1].is_whitespace);
+        assert_eq!(tokens[2].text, "world");
+        assert!(!tokens[2].is_whitespace);
+    }
+
+    #[test]
+    fn test_tokenize_words_with_punctuation() {
+        let rope = Rope::from("hello, world!");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Words);
+
+        let word_tokens: Vec<_> = tokens.iter().filter(|t| !t.is_whitespace).collect();
+        assert_eq!(word_tokens.len(), 2);
+        assert_eq!(word_tokens[0].text, "hello");
+        assert_eq!(word_tokens[1].text, "world");
+    }
+
+    #[test]
+    fn test_tokenize_empty_rope() {
+        let rope = Rope::from("");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_tokenize_range() {
+        let rope = Rope::from("hello world");
+        let tokens = tokenize_range(&rope, TokenizationStrategy::Graphemes, 0..5);
+
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].text, "h");
+        assert_eq!(tokens[4].text, "o");
+        assert_eq!(tokens[4].offset, 4);
+    }
+
+    #[test]
+    fn test_tokenize_range_middle() {
+        let rope = Rope::from("hello world");
+        let tokens = tokenize_range(&rope, TokenizationStrategy::Graphemes, 6..11);
+
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].text, "w");
+        assert_eq!(tokens[0].offset, 6);
+        assert_eq!(tokens[4].text, "d");
+        assert_eq!(tokens[4].offset, 10);
+    }
+
+    #[test]
+    fn test_find_token_at_offset() {
+        let rope = Rope::from("hello world");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(find_token_at_offset(&tokens, 0), Some(0));
+        assert_eq!(find_token_at_offset(&tokens, 4), Some(4));
+        assert_eq!(find_token_at_offset(&tokens, 6), Some(6));
+        assert_eq!(find_token_at_offset(&tokens, 11), None);
+    }
+
+    #[test]
+    fn test_filter_non_whitespace() {
+        let rope = Rope::from("a b c");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+        let filtered = filter_non_whitespace(tokens);
+
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].text, "a");
+        assert_eq!(filtered[1].text, "b");
+        assert_eq!(filtered[2].text, "c");
+    }
+
+    #[test]
+    fn test_token_end_offset() {
+        let rope = Rope::from("hello");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens[0].offset, 0);
+        assert_eq!(tokens[0].end_offset(), 1);
+        assert_eq!(tokens[4].offset, 4);
+        assert_eq!(tokens[4].end_offset(), 5);
+    }
+
+    #[test]
+    fn test_multi_byte_unicode() {
+        let rope = Rope::from("日本語");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "日");
+        assert_eq!(tokens[0].offset, 0);
+        assert_eq!(tokens[0].len(), 3);
+
+        assert_eq!(tokens[1].text, "本");
+        assert_eq!(tokens[1].offset, 3);
+        assert_eq!(tokens[1].len(), 3);
+
+        assert_eq!(tokens[2].text, "語");
+        assert_eq!(tokens[2].offset, 6);
+        assert_eq!(tokens[2].len(), 3);
+    }
+
+    #[test]
+    fn test_mixed_content() {
+        let rope = Rope::from("Hello 世界 👋");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        let non_whitespace: Vec<_> = tokens.iter().filter(|t| !t.is_whitespace).collect();
+        assert!(non_whitespace.len() > 0);
+
+        let has_emoji = tokens.iter().any(|t| t.text == "👋");
+        assert!(has_emoji);
+    }
+
+    #[test]
+    fn test_newlines_in_graphemes() {
+        let rope = Rope::from("line1\nline2");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        let newline_token = tokens.iter().find(|t| t.text == "\n").unwrap();
+        assert!(newline_token.is_whitespace);
+        assert_eq!(newline_token.offset, 5);
+    }
+
+    #[test]
+    fn test_tabs_and_spaces() {
+        let rope = Rope::from("a\tb\tc");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        let tabs: Vec<_> = tokens.iter().filter(|t| t.text == "\t").collect();
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs[0].is_whitespace);
+    }
+
+    #[test]
+    fn test_tokenizer_with_large_text() {
+        let text = "a".repeat(10000);
+        let rope = Rope::from(text.as_str());
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 10000);
+        assert_eq!(tokens[0].offset, 0);
+        assert_eq!(tokens[9999].offset, 9999);
+    }
+
+    #[test]
+    fn test_words_only_whitespace() {
+        let rope = Rope::from("   ");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Words);
+
+        assert_eq!(tokens.len(), 1);
+        assert!(tokens[0].is_whitespace);
+        assert_eq!(tokens[0].text, "   ");
+    }
+
+    #[test]
+    fn test_words_no_whitespace() {
+        let rope = Rope::from("hello");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Words);
+
+        assert_eq!(tokens.len(), 1);
+        assert!(!tokens[0].is_whitespace);
+        assert_eq!(tokens[0].text, "hello");
+    }
+
+    #[test]
+    fn test_skin_tone_emoji() {
+        let rope = Rope::from("👋🏽");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "👋🏽");
+    }
+
+    #[test]
+    fn test_zero_width_joiner() {
+        let rope = Rope::from("👨‍👩‍👧‍👦");
+        let tokens = tokenize_rope(&rope, TokenizationStrategy::Graphemes);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "👨‍👩‍👧‍👦");
     }
 }
