@@ -5668,36 +5668,47 @@ impl EditorElement {
         // Get the editor entity ID
         let editor_id = self.editor.entity_id();
 
+        // Hold a single read lock for the entire operation to avoid race conditions
+        let editor = self.editor.read(cx);
+        let registry = &editor.decoration_registry;
+
         // Get all decorations for this editor from the registry
-        self.editor.read(cx).decoration_registry.get_decorations_owned(editor_id)
-            .into_iter()
-            .for_each(|decoration| {
-                // Convert anchors to display points
-                let display_snapshot = &snapshot.display_snapshot;
-                let start_point = decoration.start.to_display_point(display_snapshot);
+        let display_snapshot = &snapshot.display_snapshot;
 
-                // Skip decorations outside the visible range
-                if start_point.row() < start_row || start_point.row() >= end_row {
-                    return;
-                }
+        for decoration in registry.get_decorations_owned(editor_id) {
+            // Convert anchors to display points
+            let start_point = decoration.start.to_display_point(display_snapshot);
 
-                let end_point = decoration.end.as_ref()
-                    .map(|anchor| anchor.to_display_point(display_snapshot));
+            // For range decorations, we need to check if they intersect the visible range
+            // A decoration is visible if:
+            // 1. It's a point decoration and its start is in range
+            // 2. It's a range decoration that starts before or in range AND ends after or in range
+            let end_point = decoration.end.as_ref()
+                .map(|anchor| anchor.to_display_point(display_snapshot));
 
-                // Get decoration options from the registry
-                if let Some(options) = self.editor.read(cx)
-                    .decoration_registry
-                    .get_decoration_type(decoration.type_id)
-                {
-                    decorations.push(LayoutDecoration {
-                        id: decoration.id,
-                        type_id: decoration.type_id,
-                        position: start_point,
-                        end_position: end_point,
-                        options,
-                    });
-                }
-            });
+            let is_visible = if let Some(end) = end_point {
+                // Range decoration: visible if it overlaps the visible range
+                start_point.row() < end_row && end.row() >= start_row
+            } else {
+                // Point decoration: visible if start is in range
+                start_point.row() >= start_row && start_point.row() < end_row
+            };
+
+            if !is_visible {
+                continue;
+            }
+
+            // Get decoration options from the registry
+            if let Some(options) = registry.get_decoration_type(decoration.type_id) {
+                decorations.push(LayoutDecoration {
+                    id: decoration.id,
+                    type_id: decoration.type_id,
+                    position: start_point,
+                    end_position: end_point,
+                    options,
+                });
+            }
+        }
 
         // Sort decorations by position and z-index for proper rendering order
         decorations.sort_by(|a, b| {
@@ -6790,7 +6801,7 @@ impl EditorElement {
 
         let is_light_theme = cx.theme().appearance == Appearance::Light;
         let line_height = layout.position_map.line_height;
-        let em_advance = layout.position_map.em_advance;
+        let start_row = layout.visible_display_row_range.start;
 
         for decoration in &layout.decorations {
             let style = decoration.options.style.style_for_theme(is_light_theme);
@@ -6803,13 +6814,24 @@ impl EditorElement {
                         let row = decoration.position.row();
                         let column = decoration.position.column();
 
-                        // Calculate pixel position
+                        // Get the line layout for accurate positioning
+                        let row_index = row.minus(start_row) as usize;
+                        if row_index >= layout.position_map.line_layouts.len() {
+                            continue;
+                        }
+                        let line_layout = &layout.position_map.line_layouts[row_index];
+
+                        // Calculate pixel position using proper character width calculation
                         let y = layout.content_origin.y
-                            + (row.as_f64() - layout.position_map.scroll_position.y) as f32
-                                * line_height;
+                            + Pixels::from(
+                                (row.as_f64() - layout.position_map.scroll_position.y)
+                                    * ScrollOffset::from(line_height),
+                            );
                         let x = layout.content_origin.x
-                            + (column as f32) * em_advance
-                            - layout.position_map.scroll_pixel_position.x;
+                            + Pixels::from(
+                                ScrollPixelOffset::from(line_layout.x_for_index(column as usize))
+                                    - layout.position_map.scroll_pixel_position.x,
+                            );
 
                         // Render the text
                         let color = style.background_color.unwrap_or(cx.theme().colors().text);
@@ -6828,14 +6850,16 @@ impl EditorElement {
                             &text_runs,
                             None,
                         ) {
-                            let _ = shaped_line.paint(
-                                gpui::point(x, y),
-                                line_height,
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
+                            shaped_line
+                                .paint(
+                                    gpui::point(x, y),
+                                    line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                )
+                                .log_err();
                         }
                     }
                 }
