@@ -5368,3 +5368,605 @@ mod hat_renderer_tests {
         });
     }
 }
+
+pub mod highlight_renderer {
+    //! Highlight rendering system for Cursorless integration in Zed.
+    //!
+    //! This module provides the integration layer for managing text range highlights
+    //! in the editor. It supports both token-level and line-level highlights with
+    //! theme-aware colors for visual feedback during Cursorless operations.
+    //!
+    //! # Features
+    //!
+    //! - **Range-based highlighting**: Highlight arbitrary text ranges
+    //! - **Multiple flash styles**: Support for 5 Cursorless flash highlight styles
+    //! - **Theme-aware**: Automatic light/dark mode color adaptation
+    //! - **Efficient updates**: Only recreates decorations when necessary
+    //! - **Overlap handling**: Multiple highlights can coexist gracefully
+    //! - **Style management**: Integrates with cursorless_helpers for flash styles
+    //!
+    //! # Examples
+    //!
+    //! ```rust,ignore
+    //! use editor::decorations::highlight_renderer::*;
+    //! use editor::decorations::cursorless_helpers::FlashStyle;
+    //! use editor::Editor;
+    //!
+    //! let mut renderer = HighlightRenderer::new();
+    //!
+    //! // Highlight a range with pending delete style
+    //! let range = 10..20;
+    //! renderer.add_highlight(&editor, range, FlashStyle::PendingDelete, false, cx);
+    //!
+    //! // Highlight a full line
+    //! let line_range = 30..45;
+    //! renderer.add_highlight(&editor, line_range, FlashStyle::Referenced, true, cx);
+    //!
+    //! // Clear all highlights
+    //! renderer.clear_highlights(&editor, cx);
+    //! ```
+
+    use super::cursorless_helpers::{create_flash_highlight, create_line_highlight, FlashStyle};
+    use super::{Decoration, DecorationId, DecorationTypeId};
+    use crate::Editor;
+    use gpui::Context;
+    use std::collections::HashMap;
+    use std::ops::Range;
+
+    /// Configuration for a single highlight instance.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub struct HighlightConfig {
+        /// The flash style to use for this highlight
+        pub style: FlashStyle,
+        /// Whether this is a whole-line highlight
+        pub is_line_highlight: bool,
+    }
+
+    impl HighlightConfig {
+        /// Create a new highlight configuration.
+        pub fn new(style: FlashStyle, is_line_highlight: bool) -> Self {
+            Self {
+                style,
+                is_line_highlight,
+            }
+        }
+
+        /// Create a token-level highlight configuration.
+        pub fn token(style: FlashStyle) -> Self {
+            Self::new(style, false)
+        }
+
+        /// Create a line-level highlight configuration.
+        pub fn line(style: FlashStyle) -> Self {
+            Self::new(style, true)
+        }
+    }
+
+    /// Manages highlight decorations for a single editor.
+    ///
+    /// This struct maintains the state needed to render highlights, including:
+    /// - Decoration type IDs for each unique highlight style
+    /// - Current highlight assignments
+    /// - Automatic ID generation for decoration instances
+    pub struct HighlightRenderer {
+        /// Maps highlight configs to their decoration type IDs
+        highlight_type_cache: HashMap<HighlightConfig, DecorationTypeId>,
+        /// Counter for generating unique decoration IDs
+        next_decoration_id: usize,
+        /// Track active decoration IDs by type for efficient clearing
+        active_decorations_by_type: HashMap<DecorationTypeId, Vec<DecorationId>>,
+    }
+
+    impl HighlightRenderer {
+        /// Creates a new highlight renderer.
+        pub fn new() -> Self {
+            Self {
+                highlight_type_cache: HashMap::new(),
+                next_decoration_id: 1,
+                active_decorations_by_type: HashMap::new(),
+            }
+        }
+
+        /// Gets or creates a decoration type ID for a highlight configuration.
+        ///
+        /// This caches decoration types to avoid recreating them repeatedly.
+        fn get_or_create_highlight_type(
+            &mut self,
+            config: HighlightConfig,
+            editor: &mut Editor,
+        ) -> DecorationTypeId {
+            if let Some(&type_id) = self.highlight_type_cache.get(&config) {
+                return type_id;
+            }
+
+            let decoration_options = if config.is_line_highlight {
+                create_line_highlight(config.style)
+            } else {
+                create_flash_highlight(config.style)
+            };
+
+            let type_id = editor.create_decoration_type(decoration_options);
+            self.highlight_type_cache.insert(config, type_id);
+            type_id
+        }
+
+        /// Generates a new unique decoration ID.
+        fn next_id(&mut self) -> DecorationId {
+            let id = DecorationId(self.next_decoration_id);
+            self.next_decoration_id += 1;
+            id
+        }
+
+        /// Add a highlight to a text range.
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to add the highlight to
+        /// * `range` - Byte offset range to highlight
+        /// * `style` - The flash style to use
+        /// * `is_line_highlight` - Whether to highlight the full line
+        /// * `cx` - The context for updating the editor
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// renderer.add_highlight(&editor, 10..20, FlashStyle::PendingDelete, false, cx);
+        /// ```
+        pub fn add_highlight(
+            &mut self,
+            editor: &mut Editor,
+            range: Range<usize>,
+            style: FlashStyle,
+            is_line_highlight: bool,
+            cx: &mut Context<Editor>,
+        ) {
+            let config = HighlightConfig::new(style, is_line_highlight);
+            let type_id = self.get_or_create_highlight_type(config, editor);
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+
+            let start_anchor = snapshot.anchor_before(range.start);
+            let end_anchor = snapshot.anchor_after(range.end);
+
+            let decoration_id = self.next_id();
+            let decoration = Decoration::range(decoration_id, type_id, start_anchor, end_anchor);
+
+            self.active_decorations_by_type
+                .entry(type_id)
+                .or_insert_with(Vec::new)
+                .push(decoration_id);
+
+            editor.set_decorations(type_id, vec![decoration], cx);
+            cx.notify();
+        }
+
+        /// Add multiple highlights at once.
+        ///
+        /// This is more efficient than calling `add_highlight` multiple times
+        /// as it batches the decoration updates.
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to add highlights to
+        /// * `highlights` - Vector of (range, style, is_line_highlight) tuples
+        /// * `cx` - The context for updating the editor
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// let highlights = vec![
+        ///     (10..20, FlashStyle::PendingDelete, false),
+        ///     (30..40, FlashStyle::Referenced, false),
+        /// ];
+        /// renderer.add_highlights(&editor, highlights, cx);
+        /// ```
+        pub fn add_highlights(
+            &mut self,
+            editor: &mut Editor,
+            highlights: Vec<(Range<usize>, FlashStyle, bool)>,
+            cx: &mut Context<Editor>,
+        ) {
+            if highlights.is_empty() {
+                return;
+            }
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+
+            let mut decorations_by_type: HashMap<DecorationTypeId, Vec<Decoration>> =
+                HashMap::new();
+
+            for (range, style, is_line_highlight) in highlights {
+                let config = HighlightConfig::new(style, is_line_highlight);
+                let type_id = self.get_or_create_highlight_type(config, editor);
+
+                let start_anchor = snapshot.anchor_before(range.start);
+                let end_anchor = snapshot.anchor_after(range.end);
+
+                let decoration_id = self.next_id();
+                let decoration =
+                    Decoration::range(decoration_id, type_id, start_anchor, end_anchor);
+
+                self.active_decorations_by_type
+                    .entry(type_id)
+                    .or_insert_with(Vec::new)
+                    .push(decoration_id);
+
+                decorations_by_type
+                    .entry(type_id)
+                    .or_insert_with(Vec::new)
+                    .push(decoration);
+            }
+
+            for (type_id, decorations) in decorations_by_type {
+                editor.set_decorations(type_id, decorations, cx);
+            }
+
+            cx.notify();
+        }
+
+        /// Set highlights for a specific style, replacing any existing highlights of that style.
+        ///
+        /// This is useful when you want to update all highlights of a particular type
+        /// without affecting other highlight types.
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to set highlights in
+        /// * `ranges` - Vector of byte offset ranges to highlight
+        /// * `style` - The flash style to use
+        /// * `is_line_highlight` - Whether to highlight full lines
+        /// * `cx` - The context for updating the editor
+        pub fn set_highlights(
+            &mut self,
+            editor: &mut Editor,
+            ranges: Vec<Range<usize>>,
+            style: FlashStyle,
+            is_line_highlight: bool,
+            cx: &mut Context<Editor>,
+        ) {
+            let config = HighlightConfig::new(style, is_line_highlight);
+            let type_id = self.get_or_create_highlight_type(config, editor);
+
+            if ranges.is_empty() {
+                editor.clear_decorations(type_id, cx);
+                self.active_decorations_by_type.remove(&type_id);
+                cx.notify();
+                return;
+            }
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+
+            let mut decorations = Vec::new();
+            let mut decoration_ids = Vec::new();
+
+            for range in ranges {
+                let start_anchor = snapshot.anchor_before(range.start);
+                let end_anchor = snapshot.anchor_after(range.end);
+
+                let decoration_id = self.next_id();
+                let decoration =
+                    Decoration::range(decoration_id, type_id, start_anchor, end_anchor);
+
+                decoration_ids.push(decoration_id);
+                decorations.push(decoration);
+            }
+
+            self.active_decorations_by_type
+                .insert(type_id, decoration_ids);
+
+            editor.set_decorations(type_id, decorations, cx);
+            cx.notify();
+        }
+
+        /// Clear highlights of a specific style.
+        ///
+        /// # Arguments
+        ///
+        /// * `editor` - The editor to clear highlights from
+        /// * `style` - The flash style to clear
+        /// * `is_line_highlight` - Whether to clear line highlights (true) or token highlights (false)
+        /// * `cx` - The context for updating the editor
+        pub fn clear_highlights_for_style(
+            &mut self,
+            editor: &mut Editor,
+            style: FlashStyle,
+            is_line_highlight: bool,
+            cx: &mut Context<Editor>,
+        ) {
+            let config = HighlightConfig::new(style, is_line_highlight);
+            if let Some(&type_id) = self.highlight_type_cache.get(&config) {
+                editor.clear_decorations(type_id, cx);
+                self.active_decorations_by_type.remove(&type_id);
+                cx.notify();
+            }
+        }
+
+        /// Clear all highlights from the editor.
+        ///
+        /// This removes all decorations for all cached highlight types.
+        pub fn clear_highlights(&mut self, editor: &mut Editor, cx: &mut Context<Editor>) {
+            for &type_id in self.highlight_type_cache.values() {
+                editor.clear_decorations(type_id, cx);
+            }
+            self.active_decorations_by_type.clear();
+            cx.notify();
+        }
+
+        /// Clear highlights and dispose of all cached decoration types.
+        ///
+        /// This is useful for cleanup when the renderer will no longer be used.
+        /// After calling this, the type cache will be empty and new decoration
+        /// types will be created on the next assignment.
+        pub fn dispose(&mut self, editor: &mut Editor, cx: &mut Context<Editor>) {
+            for &type_id in self.highlight_type_cache.values() {
+                editor.clear_decorations(type_id, cx);
+                editor.dispose_decoration_type(type_id);
+            }
+            self.highlight_type_cache.clear();
+            self.active_decorations_by_type.clear();
+            cx.notify();
+        }
+
+        /// Returns the number of cached highlight decoration types.
+        pub fn cached_type_count(&self) -> usize {
+            self.highlight_type_cache.len()
+        }
+
+        /// Returns the total number of active highlight decorations.
+        pub fn active_highlight_count(&self) -> usize {
+            self.active_decorations_by_type
+                .values()
+                .map(|ids| ids.len())
+                .sum()
+        }
+
+        /// Check if there are any active highlights.
+        pub fn has_highlights(&self) -> bool {
+            !self.active_decorations_by_type.is_empty()
+        }
+
+        /// Get the decoration type ID for a specific highlight configuration.
+        ///
+        /// Returns `None` if the configuration hasn't been used yet.
+        pub fn get_type_id(&self, config: &HighlightConfig) -> Option<DecorationTypeId> {
+            self.highlight_type_cache.get(config).copied()
+        }
+    }
+
+    impl Default for HighlightRenderer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod highlight_renderer_tests {
+    use super::highlight_renderer::*;
+    use super::cursorless_helpers::FlashStyle;
+    use crate::Editor;
+    use gpui::{Context, Entity, TestAppContext};
+    use multi_buffer::MultiBuffer;
+
+    fn init_test(cx: &mut TestAppContext) -> Entity<Editor> {
+        let buffer = cx.new(|cx| {
+            let text = "hello world\nfoo bar baz\ntest line three\n";
+            MultiBuffer::build_simple(text, cx)
+        });
+        cx.new(|cx| Editor::for_buffer(buffer, None, true, cx))
+    }
+
+    #[gpui::test]
+    fn test_highlight_renderer_creation(cx: &mut TestAppContext) {
+        let renderer = HighlightRenderer::new();
+        assert_eq!(renderer.cached_type_count(), 0);
+        assert_eq!(renderer.active_highlight_count(), 0);
+        assert!(!renderer.has_highlights());
+    }
+
+    #[gpui::test]
+    fn test_add_single_highlight(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+
+            assert_eq!(renderer.cached_type_count(), 1);
+            assert_eq!(renderer.active_highlight_count(), 1);
+            assert!(renderer.has_highlights());
+        });
+    }
+
+    #[gpui::test]
+    fn test_add_multiple_highlights(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            let highlights = vec![
+                (0..5, FlashStyle::PendingDelete, false),
+                (10..15, FlashStyle::Referenced, false),
+                (20..25, FlashStyle::JustAdded, true),
+            ];
+
+            renderer.add_highlights(editor, highlights, cx);
+
+            assert_eq!(renderer.cached_type_count(), 3);
+            assert_eq!(renderer.active_highlight_count(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn test_set_highlights_replaces_existing(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.set_highlights(
+                editor,
+                vec![0..5, 10..15],
+                FlashStyle::PendingDelete,
+                false,
+                cx,
+            );
+            assert_eq!(renderer.active_highlight_count(), 2);
+
+            renderer.set_highlights(
+                editor,
+                vec![20..25],
+                FlashStyle::PendingDelete,
+                false,
+                cx,
+            );
+            assert_eq!(renderer.active_highlight_count(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_clear_highlights_for_style(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 10..15, FlashStyle::Referenced, false, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            renderer.clear_highlights_for_style(editor, FlashStyle::PendingDelete, false, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_clear_all_highlights(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 10..15, FlashStyle::Referenced, false, cx);
+            renderer.add_highlight(editor, 20..25, FlashStyle::JustAdded, true, cx);
+
+            assert_eq!(renderer.cached_type_count(), 3);
+            assert!(renderer.has_highlights());
+
+            renderer.clear_highlights(editor, cx);
+
+            assert!(!renderer.has_highlights());
+            assert_eq!(renderer.active_highlight_count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_dispose(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 10..15, FlashStyle::Referenced, true, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            renderer.dispose(editor, cx);
+
+            assert_eq!(renderer.cached_type_count(), 0);
+            assert!(!renderer.has_highlights());
+        });
+    }
+
+    #[gpui::test]
+    fn test_line_vs_token_highlights(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 10..15, FlashStyle::PendingDelete, true, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_overlapping_highlights(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..10, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 5..15, FlashStyle::Referenced, false, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+            assert_eq!(renderer.active_highlight_count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_highlight_config_equality(cx: &mut TestAppContext) {
+        let config1 = HighlightConfig::token(FlashStyle::PendingDelete);
+        let config2 = HighlightConfig::token(FlashStyle::PendingDelete);
+        let config3 = HighlightConfig::line(FlashStyle::PendingDelete);
+        let config4 = HighlightConfig::token(FlashStyle::Referenced);
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+        assert_ne!(config1, config4);
+    }
+
+    #[gpui::test]
+    fn test_all_flash_styles(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            let styles = vec![
+                FlashStyle::PendingDelete,
+                FlashStyle::Referenced,
+                FlashStyle::PendingModification0,
+                FlashStyle::PendingModification1,
+                FlashStyle::JustAdded,
+            ];
+
+            for (i, style) in styles.iter().enumerate() {
+                let start = i * 5;
+                let end = start + 3;
+                renderer.add_highlight(editor, start..end, *style, false, cx);
+            }
+
+            assert_eq!(renderer.cached_type_count(), 5);
+            assert_eq!(renderer.active_highlight_count(), 5);
+        });
+    }
+
+    #[gpui::test]
+    fn test_get_type_id(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            let config = HighlightConfig::token(FlashStyle::PendingDelete);
+            assert!(renderer.get_type_id(&config).is_none());
+
+            renderer.add_highlight(editor, 0..5, FlashStyle::PendingDelete, false, cx);
+
+            assert!(renderer.get_type_id(&config).is_some());
+        });
+    }
+}
