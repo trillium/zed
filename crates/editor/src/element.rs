@@ -6808,58 +6808,121 @@ impl EditorElement {
 
             match decoration.options.decoration_type {
                 DecorationType::Before | DecorationType::After => {
-                    // For now, just render text content decorations
-                    // SVG rendering will be added in a follow-up
-                    if let Some(DecorationContent::Text(ref text)) = decoration.options.content {
-                        let row = decoration.position.row();
-                        let column = decoration.position.column();
+                    let row = decoration.position.row();
+                    let column = decoration.position.column();
 
-                        // Get the line layout for accurate positioning
-                        let row_index = row.minus(start_row) as usize;
-                        if row_index >= layout.position_map.line_layouts.len() {
-                            continue;
+                    // Get the line layout for accurate positioning
+                    let row_index = row.minus(start_row) as usize;
+                    if row_index >= layout.position_map.line_layouts.len() {
+                        continue;
+                    }
+                    let line_layout = &layout.position_map.line_layouts[row_index];
+
+                    // Calculate base pixel position using proper character width calculation
+                    let base_y = layout.content_origin.y
+                        + Pixels::from(
+                            (row.as_f64() - layout.position_map.scroll_position.y)
+                                * ScrollOffset::from(line_height),
+                        );
+                    let base_x = layout.content_origin.x
+                        + Pixels::from(
+                            ScrollPixelOffset::from(line_layout.x_for_index(column as usize))
+                                - layout.position_map.scroll_pixel_position.x,
+                        );
+
+                    match decoration.options.content {
+                        Some(DecorationContent::Text(ref text)) => {
+                            // Render text decoration
+                            let color = style.background_color.unwrap_or(cx.theme().colors().text);
+                            let text_runs = vec![TextRun {
+                                len: text.len(),
+                                font: self.style.text.font(),
+                                color,
+                                background_color: None,
+                                underline: Default::default(),
+                                strikethrough: Default::default(),
+                            }];
+
+                            if let Ok(shaped_line) = window.text_system().shape_line(
+                                text.clone(),
+                                self.style.text.font_size,
+                                &text_runs,
+                                None,
+                            ) {
+                                shaped_line
+                                    .paint(
+                                        gpui::point(base_x, base_y),
+                                        line_height,
+                                        TextAlign::Left,
+                                        None,
+                                        window,
+                                        cx,
+                                    )
+                                    .log_err();
+                            }
                         }
-                        let line_layout = &layout.position_map.line_layouts[row_index];
+                        Some(DecorationContent::Svg {
+                            ref source,
+                            width_px,
+                            height_px,
+                        }) => {
+                            // Parse margin from style to adjust position
+                            let (margin_top, margin_right, margin_bottom, margin_left) =
+                                parse_margin(style.margin.as_deref());
 
-                        // Calculate pixel position using proper character width calculation
-                        let y = layout.content_origin.y
-                            + Pixels::from(
-                                (row.as_f64() - layout.position_map.scroll_position.y)
-                                    * ScrollOffset::from(line_height),
-                            );
-                        let x = layout.content_origin.x
-                            + Pixels::from(
-                                ScrollPixelOffset::from(line_layout.x_for_index(column as usize))
-                                    - layout.position_map.scroll_pixel_position.x,
-                            );
+                            // Calculate final position with margins applied
+                            // For Cursorless hats: negative top/right margins position SVG above/before character
+                            let svg_x = base_x + margin_left;
+                            let svg_y = base_y + margin_top;
 
-                        // Render the text
-                        let color = style.background_color.unwrap_or(cx.theme().colors().text);
-                        let text_runs = vec![TextRun {
-                            len: text.len(),
-                            font: self.style.text.font(),
-                            color,
-                            background_color: None,
-                            underline: Default::default(),
-                            strikethrough: Default::default(),
-                        }];
+                            // Create bounds for the SVG
+                            let bounds = Bounds {
+                                origin: gpui::point(svg_x, svg_y),
+                                size: gpui::size(px(width_px), px(height_px)),
+                            };
 
-                        if let Ok(shaped_line) = window.text_system().shape_line(
-                            text.clone(),
-                            self.style.text.font_size,
-                            &text_runs,
-                            None,
-                        ) {
-                            shaped_line
-                                .paint(
-                                    gpui::point(x, y),
-                                    line_height,
-                                    TextAlign::Left,
-                                    None,
-                                    window,
-                                    cx,
-                                )
-                                .log_err();
+                            // Parse SVG data URI and render
+                            if let Some(svg_bytes) = parse_svg_data_uri(source.as_ref()) {
+                                // Get color from style or use default
+                                let color = style
+                                    .background_color
+                                    .unwrap_or_else(|| cx.theme().colors().text);
+
+                                // Render the SVG
+                                window
+                                    .paint_svg(
+                                        bounds,
+                                        source.clone(),
+                                        Some(&svg_bytes),
+                                        Default::default(),
+                                        color,
+                                        cx,
+                                    )
+                                    .log_err();
+                            } else {
+                                // If not a data URI, try as file path
+                                let color = style
+                                    .background_color
+                                    .unwrap_or_else(|| cx.theme().colors().text);
+
+                                window
+                                    .paint_svg(
+                                        bounds,
+                                        source.clone(),
+                                        None,
+                                        Default::default(),
+                                        color,
+                                        cx,
+                                    )
+                                    .log_err();
+                            }
+                        }
+                        Some(DecorationContent::Image { .. }) => {
+                            // Image rendering not yet implemented
+                            // This would be similar to SVG but using window.paint_image
+                        }
+                        None => {
+                            // No content to render
                         }
                     }
                 }
@@ -12346,6 +12409,224 @@ fn compute_auto_height_layout(
     };
 
     Some(size(width, final_height))
+}
+
+/// Helper functions for decoration rendering
+mod decoration_helpers {
+    use gpui::Pixels;
+
+    /// Parse CSS-style margin string into individual pixel values.
+    ///
+    /// Supports formats:
+    /// - "10px" -> all sides 10px
+    /// - "10px 20px" -> top/bottom 10px, left/right 20px
+    /// - "10px 20px 30px 40px" -> top, right, bottom, left
+    /// - "-10px -5px 0 0" -> negative margins for positioning above/before
+    ///
+    /// Returns (top, right, bottom, left) in Pixels.
+    pub fn parse_margin(margin: Option<&str>) -> (Pixels, Pixels, Pixels, Pixels) {
+        let margin = match margin {
+            Some(m) => m,
+            None => return (Pixels::ZERO, Pixels::ZERO, Pixels::ZERO, Pixels::ZERO),
+        };
+
+        let parts: Vec<&str> = margin.split_whitespace().collect();
+
+        match parts.len() {
+            1 => {
+                let value = parse_pixels(parts[0]);
+                (value, value, value, value)
+            }
+            2 => {
+                let vertical = parse_pixels(parts[0]);
+                let horizontal = parse_pixels(parts[1]);
+                (vertical, horizontal, vertical, horizontal)
+            }
+            4 => {
+                let top = parse_pixels(parts[0]);
+                let right = parse_pixels(parts[1]);
+                let bottom = parse_pixels(parts[2]);
+                let left = parse_pixels(parts[3]);
+                (top, right, bottom, left)
+            }
+            _ => (Pixels::ZERO, Pixels::ZERO, Pixels::ZERO, Pixels::ZERO),
+        }
+    }
+
+    /// Parse a pixel value string like "10px", "-5px", "0" into Pixels.
+    fn parse_pixels(value: &str) -> Pixels {
+        let value = value.trim();
+        let value = value.strip_suffix("px").unwrap_or(value);
+
+        value
+            .parse::<f32>()
+            .map(gpui::px)
+            .unwrap_or(Pixels::ZERO)
+    }
+
+    /// Parse SVG data URI and extract the SVG content as bytes.
+    ///
+    /// Supports two formats:
+    /// 1. `data:image/svg+xml;utf8,<svg>...</svg>` - UTF-8 encoded
+    /// 2. `data:image/svg+xml;base64,PHN2Zy4uLjwvc3ZnPg==` - Base64 encoded
+    ///
+    /// Returns the decoded SVG bytes if the URI is valid, None otherwise.
+    pub fn parse_svg_data_uri(uri: &str) -> Option<Vec<u8>> {
+        let uri = uri.trim();
+
+        if !uri.starts_with("data:") {
+            return None;
+        }
+
+        let uri = uri.strip_prefix("data:")?;
+
+        let (mime_and_encoding, data) = uri.split_once(',')?;
+
+        if !mime_and_encoding.starts_with("image/svg+xml") {
+            return None;
+        }
+
+        if mime_and_encoding.contains("base64") {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(data.as_bytes())
+                .ok()
+        } else {
+            Some(data.as_bytes().to_vec())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use gpui::px;
+
+        #[test]
+        fn test_parse_margin_single_value() {
+            let (top, right, bottom, left) = parse_margin(Some("10px"));
+            assert_eq!(top, px(10.0));
+            assert_eq!(right, px(10.0));
+            assert_eq!(bottom, px(10.0));
+            assert_eq!(left, px(10.0));
+        }
+
+        #[test]
+        fn test_parse_margin_two_values() {
+            let (top, right, bottom, left) = parse_margin(Some("10px 20px"));
+            assert_eq!(top, px(10.0));
+            assert_eq!(right, px(20.0));
+            assert_eq!(bottom, px(10.0));
+            assert_eq!(left, px(20.0));
+        }
+
+        #[test]
+        fn test_parse_margin_four_values() {
+            let (top, right, bottom, left) = parse_margin(Some("10px 20px 30px 40px"));
+            assert_eq!(top, px(10.0));
+            assert_eq!(right, px(20.0));
+            assert_eq!(bottom, px(30.0));
+            assert_eq!(left, px(40.0));
+        }
+
+        #[test]
+        fn test_parse_margin_negative_values() {
+            let (top, right, bottom, left) = parse_margin(Some("-10px -5px 0 0"));
+            assert_eq!(top, px(-10.0));
+            assert_eq!(right, px(-5.0));
+            assert_eq!(bottom, px(0.0));
+            assert_eq!(left, px(0.0));
+        }
+
+        #[test]
+        fn test_parse_margin_no_px_suffix() {
+            let (top, right, bottom, left) = parse_margin(Some("10 20 30 40"));
+            assert_eq!(top, px(10.0));
+            assert_eq!(right, px(20.0));
+            assert_eq!(bottom, px(30.0));
+            assert_eq!(left, px(40.0));
+        }
+
+        #[test]
+        fn test_parse_margin_none() {
+            let (top, right, bottom, left) = parse_margin(None);
+            assert_eq!(top, Pixels::ZERO);
+            assert_eq!(right, Pixels::ZERO);
+            assert_eq!(bottom, Pixels::ZERO);
+            assert_eq!(left, Pixels::ZERO);
+        }
+
+        #[test]
+        fn test_parse_margin_invalid() {
+            let (top, right, bottom, left) = parse_margin(Some("invalid"));
+            assert_eq!(top, Pixels::ZERO);
+            assert_eq!(right, Pixels::ZERO);
+            assert_eq!(bottom, Pixels::ZERO);
+            assert_eq!(left, Pixels::ZERO);
+        }
+
+        #[test]
+        fn test_parse_svg_data_uri_utf8() {
+            let svg = r#"data:image/svg+xml;utf8,<svg width="12" height="9"><path d="M6 9C9 9 12 7 12 4.5C12 2 9 0 6 0C3 0 0 2 0 4.5C0 7 3 9 6 9Z" fill="#666"/></svg>"#;
+            let result = parse_svg_data_uri(svg);
+            assert!(result.is_some());
+            let bytes = result.unwrap();
+            let content = String::from_utf8(bytes).unwrap();
+            assert!(content.contains("<svg"));
+            assert!(content.contains("</svg>"));
+        }
+
+        #[test]
+        fn test_parse_svg_data_uri_base64() {
+            let svg_content = r#"<svg width="12" height="9"><rect width="12" height="9" fill="red"/></svg>"#;
+            use base64::Engine as _;
+            let base64_content =
+                base64::engine::general_purpose::STANDARD.encode(svg_content.as_bytes());
+            let uri = format!("data:image/svg+xml;base64,{}", base64_content);
+
+            let result = parse_svg_data_uri(&uri);
+            assert!(result.is_some());
+            let bytes = result.unwrap();
+            let content = String::from_utf8(bytes).unwrap();
+            assert_eq!(content, svg_content);
+        }
+
+        #[test]
+        fn test_parse_svg_data_uri_invalid_mime() {
+            let uri = "data:image/png;base64,iVBORw0KGgo=";
+            let result = parse_svg_data_uri(uri);
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_parse_svg_data_uri_not_data_uri() {
+            let result = parse_svg_data_uri("https://example.com/image.svg");
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_parse_svg_data_uri_invalid_format() {
+            let result = parse_svg_data_uri("data:image/svg+xml");
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_parse_pixels() {
+            assert_eq!(parse_pixels("10px"), px(10.0));
+            assert_eq!(parse_pixels("-5px"), px(-5.0));
+            assert_eq!(parse_pixels("0"), px(0.0));
+            assert_eq!(parse_pixels("3.14"), px(3.14));
+            assert_eq!(parse_pixels("invalid"), Pixels::ZERO);
+        }
+
+        #[test]
+        fn test_cursorless_hat_margin() {
+            let (top, right, bottom, left) = parse_margin(Some("-9px -12px 0 0"));
+            assert_eq!(top, px(-9.0));
+            assert_eq!(right, px(-12.0));
+            assert_eq!(bottom, px(0.0));
+            assert_eq!(left, px(0.0));
+        }
+    }
 }
 
 #[cfg(test)]
