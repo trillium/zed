@@ -56,10 +56,9 @@ pub mod test;
 
 pub(crate) use actions::*;
 pub use decorations::{
-    cursorless_helpers, Decoration, DecorationContent, DecorationId, DecorationRangeBehavior,
-    DecorationRegistry, DecorationRegistryStats, DecorationRenderOptions,
-    DecorationStyle, DecorationType, DecorationTypeId,
-    ThemedDecorationStyle,
+    Decoration, DecorationContent, DecorationId, DecorationRangeBehavior, DecorationRegistry,
+    DecorationRegistryStats, DecorationRenderOptions, DecorationStyle, DecorationType,
+    DecorationTypeId, ThemedDecorationStyle, cursorless_helpers,
 };
 pub use display_map::{
     ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey,
@@ -25189,7 +25188,8 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let editor_id = cx.entity_id();
-        self.decoration_registry.set_decorations(editor_id, type_id, decorations);
+        self.decoration_registry
+            .set_decorations(editor_id, type_id, decorations);
         cx.notify();
     }
 
@@ -25202,7 +25202,8 @@ impl Editor {
     /// ```
     pub fn clear_decorations(&mut self, type_id: DecorationTypeId, cx: &mut Context<Self>) {
         let editor_id = cx.entity_id();
-        self.decoration_registry.set_decorations(editor_id, type_id, vec![]);
+        self.decoration_registry
+            .set_decorations(editor_id, type_id, vec![]);
         cx.notify();
     }
 
