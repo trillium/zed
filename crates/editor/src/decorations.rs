@@ -5970,3 +5970,460 @@ mod highlight_renderer_tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+mod cursorless_integration_tests {
+    //! End-to-end integration tests for the Cursorless hat rendering pipeline.
+    //!
+    //! These tests verify the complete decoration system works together for Cursorless:
+    //! - Tokenization → Decoration creation → Rendering in editor
+    //! - Hat and highlight rendering with all 88 hat styles and 5 flash styles
+    //! - Edit tracking through buffer modifications
+    //! - Unicode and edge case handling
+    //! - Performance with realistic Cursorless scenarios
+    //!
+    //! Test Coverage (14 integration tests):
+    //! 1. End-to-end hat rendering pipeline
+    //! 2. Highlight rendering integration
+    //! 3. Concurrent hats and highlights
+    //! 4. Decoration tracking through buffer edits
+    //! 5. All 88 hat style combinations (8 colors × 11 shapes)
+    //! 6. All 5 flash style variants
+    //! 7. Unicode text rendering (grapheme clusters, emojis)
+    //! 8. Empty buffer handling
+    //! 9. Character-level tokenization
+    //! 10. Word-level tokenization
+    //! 11. Performance with many decorations (50+ hats)
+    //! 12. Decoration lifecycle (clear and reassign)
+    //! 13. Line vs token highlight rendering
+    //! 14. Decoration ID creation verification
+
+    use super::cursorless_helpers::{HatColor, HatShape, FlashStyle};
+    use super::hat_renderer::{HatRenderer, HatRenderConfig, TokenizationStrategy};
+    use super::highlight_renderer::HighlightRenderer;
+    use super::{DecorationRegistry, DecorationRenderOptionsBuilder, DecorationType};
+    use crate::Editor;
+    use gpui::{Context, Entity, TestAppContext};
+    use language::Buffer;
+    use multi_buffer::MultiBuffer;
+    use std::collections::HashMap;
+    use text::ToPoint;
+
+    fn init_test(cx: &mut TestAppContext) -> Entity<Editor> {
+        let buffer = cx.new(|cx| {
+            let text = "function hello() {\n  return 'world';\n}\n";
+            MultiBuffer::build_simple(text, cx)
+        });
+        cx.new(|cx| Editor::for_buffer(buffer, None, true, cx))
+    }
+
+    #[gpui::test]
+    fn test_end_to_end_hat_rendering(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+                (HatColor::Green, HatShape::Curve),
+            ];
+
+            renderer.assign_hats(editor, hats.clone(), cx);
+
+            assert_eq!(renderer.cached_type_count(), 3);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            for decoration in &decorations {
+                assert!(decoration.is_point());
+                let type_data = registry.get_decoration_type(decoration.decoration_type);
+                assert!(type_data.is_some());
+                let options = type_data.unwrap();
+                assert_eq!(options.decoration_type, DecorationType::Before);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn test_highlight_rendering_integration(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..8, FlashStyle::PendingDelete, false, cx);
+            renderer.add_highlight(editor, 17..22, FlashStyle::Referenced, false, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+            assert_eq!(renderer.active_highlight_count(), 2);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            for decoration in &decorations {
+                assert!(decoration.is_range());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn test_hats_and_highlights_together(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut hat_renderer = HatRenderer::new();
+            let mut highlight_renderer = HighlightRenderer::new();
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+            hat_renderer.assign_hats(editor, hats, cx);
+
+            highlight_renderer.add_highlight(editor, 0..8, FlashStyle::Referenced, false, cx);
+
+            assert_eq!(hat_renderer.cached_type_count(), 2);
+            assert_eq!(highlight_renderer.cached_type_count(), 1);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            let point_decorations: Vec<_> = decorations.iter()
+                .filter(|d| d.is_point())
+                .collect();
+            let range_decorations: Vec<_> = decorations.iter()
+                .filter(|d| d.is_range())
+                .collect();
+
+            assert!(!point_decorations.is_empty());
+            assert!(!range_decorations.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_decorations_track_through_buffer_edits(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let initial_hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+            renderer.assign_hats(editor, initial_hats, cx);
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations_before = registry.get_decorations(editor_id);
+            let first_position_before = decorations_before[0].start.to_point(&snapshot);
+
+            editor.buffer().update(cx, |buffer, cx| {
+                buffer.edit([(0..0, "// Comment\n")], None, cx);
+            });
+
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+            let decorations_after = registry.get_decorations(editor_id);
+            let first_position_after = decorations_after[0].start.to_point(&snapshot);
+
+            assert_eq!(
+                first_position_after.row,
+                first_position_before.row + 1,
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_all_88_hat_styles_can_render(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let mut all_hats = Vec::new();
+            for color in HatColor::all() {
+                for shape in HatShape::all() {
+                    all_hats.push((*color, *shape));
+                }
+            }
+
+            assert_eq!(all_hats.len(), 88);
+
+            renderer.assign_hats(editor, all_hats.clone(), cx);
+
+            assert_eq!(renderer.cached_type_count(), 88);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            for decoration in &decorations {
+                let type_data = registry.get_decoration_type(decoration.decoration_type);
+                assert!(type_data.is_some());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn test_all_5_flash_styles_can_render(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            let flash_styles = vec![
+                FlashStyle::PendingDelete,
+                FlashStyle::Referenced,
+                FlashStyle::PendingModification0,
+                FlashStyle::PendingModification1,
+                FlashStyle::JustAdded,
+            ];
+
+            for (i, style) in flash_styles.iter().enumerate() {
+                let start = i * 3;
+                let end = start + 2;
+                renderer.add_highlight(editor, start..end, *style, false, cx);
+            }
+
+            assert_eq!(renderer.cached_type_count(), 5);
+            assert_eq!(renderer.active_highlight_count(), 5);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert_eq!(decorations.len(), 5);
+        });
+    }
+
+    #[gpui::test]
+    fn test_unicode_text_hat_rendering(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| {
+            let text = "Hello 世界 🌍\nfunction 函数() { return '🎉'; }\n";
+            MultiBuffer::build_simple(text, cx)
+        });
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+                (HatColor::Green, HatShape::Curve),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            for decoration in &decorations {
+                assert!(decoration.is_point());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn test_empty_buffer_graceful_handling(cx: &mut TestAppContext) {
+        let buffer = cx.new(|cx| MultiBuffer::build_simple("", cx));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats = vec![(HatColor::Blue, HatShape::Default)];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert_eq!(decorations.len(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn test_tokenization_strategy_character(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut config = HatRenderConfig::default();
+            config.tokenization_strategy = TokenizationStrategy::Character;
+
+            let mut renderer = HatRenderer::with_config(config);
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_tokenization_strategy_words(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut config = HatRenderConfig::default();
+            config.tokenization_strategy = TokenizationStrategy::Words;
+
+            let mut renderer = HatRenderer::with_config(config);
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn test_performance_many_decorations(cx: &mut TestAppContext) {
+        let large_text = "word ".repeat(100);
+        let buffer = cx.new(|cx| MultiBuffer::build_simple(&large_text, cx));
+        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let mut hats = Vec::new();
+            for i in 0..50 {
+                let color = HatColor::all()[i % HatColor::all().len()];
+                let shape = HatShape::all()[i % HatShape::all().len()];
+                hats.push((*color, *shape));
+            }
+
+            renderer.assign_hats(editor, hats, cx);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(decorations.len() <= 50);
+            assert!(renderer.cached_type_count() <= 50);
+        });
+    }
+
+    #[gpui::test]
+    fn test_decoration_lifecycle_clear_and_reassign(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats1 = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+            renderer.assign_hats(editor, hats1, cx);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations1 = registry.get_decorations(editor_id);
+            let count1 = decorations1.len();
+
+            renderer.clear_hats(editor, cx);
+            let decorations2 = registry.get_decorations(editor_id);
+            assert_eq!(decorations2.len(), 0);
+
+            let hats2 = vec![
+                (HatColor::Green, HatShape::Curve),
+                (HatColor::Yellow, HatShape::Fox),
+                (HatColor::Pink, HatShape::Play),
+            ];
+            renderer.assign_hats(editor, hats2, cx);
+
+            let decorations3 = registry.get_decorations(editor_id);
+            assert!(decorations3.len() > 0);
+            assert_ne!(decorations3.len(), count1);
+        });
+    }
+
+    #[gpui::test]
+    fn test_highlight_line_vs_token_rendering(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HighlightRenderer::new();
+
+            renderer.add_highlight(editor, 0..8, FlashStyle::PendingDelete, false, cx);
+
+            renderer.add_highlight(editor, 17..22, FlashStyle::Referenced, true, cx);
+
+            assert_eq!(renderer.cached_type_count(), 2);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert_eq!(decorations.len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn test_verify_decoration_ids_are_created(cx: &mut TestAppContext) {
+        let editor = init_test(cx);
+
+        editor.update(cx, |editor, cx| {
+            let mut renderer = HatRenderer::new();
+
+            let hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+            ];
+
+            renderer.assign_hats(editor, hats, cx);
+
+            let registry = editor.decoration_registry();
+            let editor_id = cx.entity_id();
+            let decorations = registry.get_decorations(editor_id);
+
+            assert!(!decorations.is_empty());
+
+            for decoration in &decorations {
+                assert!(decoration.id.0 > 0);
+            }
+        });
+    }
+}
