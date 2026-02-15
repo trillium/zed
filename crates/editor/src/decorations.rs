@@ -1249,8 +1249,8 @@ mod registry_tests {
 
         let retrieved = registry.get_decorations(editor_id);
         assert_eq!(retrieved.len(), 2);
-        assert!(retrieved.iter().any(|d| *d == &decorations[0]));
-        assert!(retrieved.iter().any(|d| *d == &decorations[1]));
+        assert!(retrieved.iter().any(|d| *d == decorations[0]));
+        assert!(retrieved.iter().any(|d| *d == decorations[1]));
     }
 
     #[test]
@@ -1672,7 +1672,7 @@ mod registry_tests {
                     editor_id,
                     type_id,
                     vec![Decoration::point(
-                        DecorationId(i),
+                        DecorationId(i as usize),
                         type_id,
                         create_test_anchor(0),
                     )],
@@ -1687,7 +1687,7 @@ mod registry_tests {
                     editor_id,
                     type_id,
                     vec![Decoration::point(
-                        DecorationId(i),
+                        DecorationId(i as usize),
                         type_id,
                         create_test_anchor(0),
                     )],
@@ -4614,16 +4614,19 @@ pub mod hat_renderer {
 mod hat_renderer_tests {
     use super::hat_renderer::*;
     use super::cursorless_helpers::{HatColor, HatShape};
+    use super::hat_tokenizer::TokenizationStrategy;
     use crate::Editor;
-    use gpui::{Context, Entity, TestAppContext};
+    use gpui::{AppContext, Context, Entity, TestAppContext};
     use multi_buffer::MultiBuffer;
+    use std::collections::HashMap;
 
     fn init_test(cx: &mut TestAppContext) -> Entity<Editor> {
-        let buffer = cx.new(|cx| {
-            let text = "hello world\nfoo bar baz\n";
-            MultiBuffer::build_simple(text, cx)
+        let text = "hello world\nfoo bar baz\n";
+        let buffer = cx.update(|cx| MultiBuffer::build_simple(text, cx));
+        let (editor, _) = cx.add_window_view(|window, cx| {
+            Editor::for_multibuffer(buffer, None, window, cx)
         });
-        cx.new(|cx| Editor::for_buffer(buffer, None, true, cx))
+        editor
     }
 
     #[gpui::test]
@@ -4802,8 +4805,10 @@ mod hat_renderer_tests {
 
     #[gpui::test]
     fn test_empty_buffer(cx: &mut TestAppContext) {
-        let buffer = cx.new(|cx| MultiBuffer::build_simple("", cx));
-        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+        let buffer = cx.update(|cx| MultiBuffer::build_simple("", cx));
+        let (editor, _) = cx.add_window_view(|window, cx| {
+            Editor::for_multibuffer(buffer, None, window, cx)
+        });
 
         editor.update(cx, |editor, cx| {
             let mut renderer = HatRenderer::new();
@@ -4817,8 +4822,10 @@ mod hat_renderer_tests {
 
     #[gpui::test]
     fn test_more_hats_than_tokens(cx: &mut TestAppContext) {
-        let buffer = cx.new(|cx| MultiBuffer::build_simple("ab", cx));
-        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+        let buffer = cx.update(|cx| MultiBuffer::build_simple("ab", cx));
+        let (editor, _) = cx.add_window_view(|window, cx| {
+            Editor::for_multibuffer(buffer, None, window, cx)
+        });
 
         editor.update(cx, |editor, cx| {
             let mut renderer = HatRenderer::new();
@@ -4837,8 +4844,10 @@ mod hat_renderer_tests {
 
     #[gpui::test]
     fn test_unicode_content(cx: &mut TestAppContext) {
-        let buffer = cx.new(|cx| MultiBuffer::build_simple("hello 世界 emoji 👋🏽", cx));
-        let editor = cx.new(|cx| Editor::for_buffer(buffer, None, true, cx));
+        let buffer = cx.update(|cx| MultiBuffer::build_simple("hello 世界 emoji 👋🏽", cx));
+        let (editor, _) = cx.add_window_view(|window, cx| {
+            Editor::for_multibuffer(buffer, None, window, cx)
+        });
 
         editor.update(cx, |editor, cx| {
             let mut renderer = HatRenderer::new();
@@ -5282,15 +5291,16 @@ mod highlight_renderer_tests {
     use super::highlight_renderer::*;
     use super::cursorless_helpers::FlashStyle;
     use crate::Editor;
-    use gpui::{Context, Entity, TestAppContext};
+    use gpui::{AppContext, Context, Entity, TestAppContext};
     use multi_buffer::MultiBuffer;
 
     fn init_test(cx: &mut TestAppContext) -> Entity<Editor> {
-        let buffer = cx.new(|cx| {
-            let text = "hello world\nfoo bar baz\ntest line three\n";
-            MultiBuffer::build_simple(text, cx)
+        let text = "hello world\nfoo bar baz\ntest line three\n";
+        let buffer = cx.update(|cx| MultiBuffer::build_simple(text, cx));
+        let (editor, _) = cx.add_window_view(|window, cx| {
+            Editor::for_multibuffer(buffer, None, window, cx)
         });
-        cx.new(|cx| Editor::for_buffer(buffer, None, true, cx))
+        editor
     }
 
     #[gpui::test]
