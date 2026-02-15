@@ -7952,28 +7952,35 @@ impl Editor {
     }
 
     pub fn show_test_hats(
-        &mut self,
+        workspace: &mut Workspace,
         _: &actions::ShowTestHats,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
     ) {
         use decorations::hat_renderer::HatRenderer;
         use decorations::cursorless_helpers::{HatColor, HatShape};
 
-        let test_hats = vec![
-            (HatColor::Blue, HatShape::Default),
-            (HatColor::Red, HatShape::Bolt),
-            (HatColor::Green, HatShape::Curve),
-            (HatColor::Yellow, HatShape::Fox),
-            (HatColor::Pink, HatShape::Wing),
-        ];
+        // Get the active editor from the workspace
+        let Some(active_editor) = workspace.active_item_as::<Self>(cx) else {
+            return;
+        };
 
-        let mut renderer = HatRenderer::new();
-        renderer.assign_hats(self, test_hats, cx);
+        active_editor.update(cx, |editor, cx| {
+            let test_hats = vec![
+                (HatColor::Blue, HatShape::Default),
+                (HatColor::Red, HatShape::Bolt),
+                (HatColor::Green, HatShape::Curve),
+                (HatColor::Yellow, HatShape::Fox),
+                (HatColor::Pink, HatShape::Wing),
+            ];
 
-        cx.notify();
+            let mut renderer = HatRenderer::new();
+            renderer.assign_hats(editor, test_hats, cx);
 
-        log::info!("Test hats displayed! Press the command again to see different tokens.");
+            cx.notify();
+
+            log::info!("Test hats displayed! Press the command again to see different tokens.");
+        });
     }
 
     pub fn accept_partial_edit_prediction(
