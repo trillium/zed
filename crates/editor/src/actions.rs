@@ -879,6 +879,8 @@ actions!(
         UnwrapSyntaxNode,
         /// Wraps selections in tag specified by language.
         WrapSelectionsInTag,
+        /// Shows test hats on visible tokens (decoration API test command).
+        ShowTestHats,
     ]
 );
 

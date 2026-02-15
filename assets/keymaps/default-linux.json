@@ -133,6 +133,7 @@
       "ctrl-alt-shift-e": "editor::ToggleEditPrediction",
       "f9": "editor::ToggleBreakpoint",
       "shift-f9": "editor::EditLogBreakpoint",
+      "ctrl-alt-shift-h": "editor::ShowTestHats",
     },
   },
   {

@@ -350,6 +350,7 @@ pub fn init(cx: &mut App) {
             workspace.register_action(Editor::new_file_horizontal);
             workspace.register_action(Editor::cancel_language_server_work);
             workspace.register_action(Editor::toggle_focus);
+            workspace.register_action(Editor::show_test_hats);
         },
     )
     .detach();
@@ -7948,6 +7949,31 @@ impl Editor {
             .ok()
         })
         .detach();
+    }
+
+    pub fn show_test_hats(
+        &mut self,
+        _: &actions::ShowTestHats,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use decorations::hat_renderer::HatRenderer;
+        use decorations::cursorless_helpers::{HatColor, HatShape};
+
+        let test_hats = vec![
+            (HatColor::Blue, HatShape::Default),
+            (HatColor::Red, HatShape::Bolt),
+            (HatColor::Green, HatShape::Curve),
+            (HatColor::Yellow, HatShape::Fox),
+            (HatColor::Pink, HatShape::Wing),
+        ];
+
+        let mut renderer = HatRenderer::new();
+        renderer.assign_hats(self, test_hats, cx);
+
+        cx.notify();
+
+        log::info!("Test hats displayed! Press the command again to see different tokens.");
     }
 
     pub fn accept_partial_edit_prediction(
