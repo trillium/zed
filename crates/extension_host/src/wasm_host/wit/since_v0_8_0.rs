@@ -1062,17 +1062,21 @@ impl editor::Host for WasmState {
                                     let mb_snapshot = ed.buffer().read(cx).read(cx);
                                     let text = mb_snapshot.text();
 
-                                    let file_path = mb_snapshot
+                                    let file = mb_snapshot
                                         .file_at(multi_buffer::MultiBufferOffset(0))
-                                        .map(|f: &Arc<dyn language::File>| {
-                                            f.path().as_unix_str().to_string()
-                                        });
+                                        .cloned();
 
                                     let language = mb_snapshot
                                         .language_at(multi_buffer::MultiBufferOffset(0))
                                         .map(|l| l.name().to_string());
 
                                     drop(mb_snapshot);
+
+                                    let file_path = file.and_then(|f| {
+                                        f.as_local().map(|lf| {
+                                            lf.abs_path(cx).to_string_lossy().to_string()
+                                        })
+                                    });
 
                                     let display_snapshot = ed.display_snapshot(cx);
                                     let selections: Vec<editor::Selection> = ed

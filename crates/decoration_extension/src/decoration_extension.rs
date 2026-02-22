@@ -119,13 +119,10 @@ impl ExtensionDecorationProxy for DecorationProxyImpl {
         cx: &mut App,
     ) -> u64 {
         let editor_options = convert_render_options(options);
-        let result = self
-            .with_active_editor(cx, |editor, _cx| {
-                editor.create_decoration_type(editor_options).0 as u64
-            })
-            .unwrap_or(0);
-        log::info!("create_decoration_type -> {}", result);
-        result
+        self.with_active_editor(cx, |editor, _cx| {
+            editor.create_decoration_type(editor_options).0 as u64
+        })
+        .unwrap_or(0)
     }
 
     fn set_decorations(
@@ -134,11 +131,6 @@ impl ExtensionDecorationProxy for DecorationProxyImpl {
         decorations: Vec<ExtensionDecoration>,
         cx: &mut App,
     ) -> Vec<u64> {
-        log::info!(
-            "set_decorations: type_id={}, count={}",
-            type_id,
-            decorations.len()
-        );
         let next_id = &self.next_decoration_id;
 
         self.with_active_editor(cx, |editor, cx| {

@@ -15,7 +15,6 @@ path = "src/decoration_extension.rs"
 editor.workspace = true
 extension.workspace = true
 gpui.workspace = true
-log.workspace = true
 multi_buffer.workspace = true
 text.workspace = true
 workspace.workspace = true

@@ -4710,7 +4710,6 @@ dependencies = [
  "editor",
  "extension",
  "gpui",
- "log",
  "multi_buffer",
  "text",
  "workspace",

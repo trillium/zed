@@ -695,7 +695,6 @@ impl WasmHost {
                 .context("failed to initialize wasm extension")?;
 
             let (tx, mut rx) = mpsc::unbounded::<ExtensionCall>();
-            let manifest_name = manifest.name.clone();
             let extension_task = async move {
                 // note: Setting the thread local here will slowly "poison" all tokio threads
                 // causing us to not record their panics any longer.
@@ -703,13 +702,9 @@ impl WasmHost {
                 // This is fine though, the main zed binary only uses tokio for livekit and wasm extensions.
                 // Livekit seldom (if ever) panics 🤞 so the likelihood of us missing a panic in sentry is very low.
                 IS_WASM_THREAD.with(|v| v.store(true, Ordering::Release));
-                log::info!("extension task started for {}", manifest_name);
                 while let Some(call) = rx.next().await {
-                    log::info!("extension task processing call for {}", manifest_name);
                     (call)(&mut extension, &mut store).await;
-                    log::info!("extension task finished call for {}", manifest_name);
                 }
-                log::info!("extension task exiting (channel closed) for {}", manifest_name);
             };
 
             anyhow::Ok((
