@@ -153,6 +153,15 @@ actions!(
     ]
 );
 
+actions!(
+    command_server,
+    [
+        /// Executes a pending command from the file-based command server.
+        /// Triggered by external tools (e.g., Talon voice control) via cmd-shift-f17.
+        ExecuteCommandServerRequest,
+    ]
+);
+
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
@@ -363,6 +372,14 @@ pub fn initialize_workspace(
     prompt_builder: Arc<PromptBuilder>,
     cx: &mut App,
 ) {
+    // Initialize the file-based command server for external tools (Talon, etc.)
+    init_command_server();
+
+    // Bind cmd-shift-f17 for command server (Talon voice control trigger)
+    cx.bind_keys(vec![
+        KeyBinding::new("cmd-shift-f17", ExecuteCommandServerRequest, None),
+    ]);
+
     let mut _on_close_subscription = bind_on_window_closed(cx);
     cx.observe_global::<SettingsStore>(move |cx| {
         // A 1.92 regression causes unused-assignment to trigger on this variable.
@@ -443,6 +460,10 @@ pub fn initialize_workspace(
             }
         })
         .detach();
+
+        // Poll for command server requests (file-based RPC for Talon voice control).
+        // Watches for request.json being written, processes it, writes response.json.
+        start_command_server_polling(cx);
 
         #[cfg(not(any(test, target_os = "macos")))]
         initialize_file_watcher(window, cx);
@@ -793,6 +814,9 @@ fn register_actions(
     cx: &mut Context<Workspace>,
 ) {
     workspace
+        .register_action(|workspace, _: &ExecuteCommandServerRequest, _, cx| {
+            execute_command_server_request(workspace, cx);
+        })
         .register_action(|_, _: &OpenDocs, _, cx| cx.open_url(DOCS_URL))
         .register_action(|_, _: &Minimize, window, _| {
             window.minimize_window();
@@ -1269,6 +1293,261 @@ fn dispatch_editor_visible_range_change(
             }
         })
         .detach();
+    }
+}
+
+/// Get the command server communication directory.
+fn command_server_dir() -> std::path::PathBuf {
+    let uid = unsafe { libc::getuid() };
+    std::path::PathBuf::from(format!("/tmp/zed-command-server-{}", uid))
+}
+
+/// Start polling for command server request files.
+/// Checks every 100ms if a new request.json has been written, and processes it.
+fn start_command_server_polling(cx: &mut Context<Workspace>) {
+    let dir = command_server_dir();
+    let request_path = dir.join("request.json");
+    let response_path = dir.join("response.json");
+
+    cx.spawn(async move |workspace_handle, cx| {
+        use std::time::SystemTime;
+
+        let mut last_processed: Option<SystemTime> = None;
+        log::info!("command server: polling started, watching {:?}", request_path);
+
+        loop {
+            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+
+            // Check if request.json exists and is newer than last processed
+            let mtime = match std::fs::metadata(&request_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+            {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if last_processed == Some(mtime) {
+                continue;
+            }
+            last_processed = Some(mtime);
+
+            // Read the request
+            let request_json = match std::fs::read_to_string(&request_path) {
+                Ok(json) => json,
+                Err(err) => {
+                    log::warn!("command server: failed to read request.json: {}", err);
+                    continue;
+                }
+            };
+
+            // Parse the request
+            let request: serde_json::Value = match serde_json::from_str(&request_json) {
+                Ok(v) => v,
+                Err(err) => {
+                    log::error!("command server: failed to parse request.json: {}", err);
+                    write_command_response(
+                        &response_path,
+                        None,
+                        Some(&format!("parse error: {}", err)),
+                        &[],
+                    );
+                    continue;
+                }
+            };
+
+            let command_id = request
+                .get("commandId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let uuid = request
+                .get("uuid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = request
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let return_output = request
+                .get("returnCommandOutput")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            log::info!(
+                "command server: executing command '{}' (uuid: {})",
+                command_id,
+                uuid
+            );
+
+            // Get extensions from the workspace
+            let extensions = match workspace_handle.update(cx, |_workspace, cx| {
+                get_wasm_extensions(cx)
+            }) {
+                Ok(exts) => exts,
+                Err(_) => continue,
+            };
+
+            let args_str = serde_json::to_string(&args).unwrap_or_else(|_| "[]".to_string());
+
+            let mut result_value: Option<serde_json::Value> = None;
+            let mut error_msg: Option<String> = None;
+
+            for ext in &extensions {
+                match ext.on_command(command_id.clone(), args_str.clone()).await {
+                    Ok(Ok(result_json)) => {
+                        if return_output {
+                            result_value = serde_json::from_str(&result_json).ok();
+                        }
+                        break;
+                    }
+                    Ok(Err(err)) => {
+                        if err != "command not handled" {
+                            error_msg = Some(err);
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        error_msg = Some(format!("extension error: {:#}", err));
+                        break;
+                    }
+                }
+            }
+
+            // Write response
+            let response = serde_json::json!({
+                "uuid": uuid,
+                "returnValue": result_value,
+                "error": error_msg,
+                "warnings": [],
+            });
+
+            if let Ok(response_str) = serde_json::to_string(&response) {
+                let _ = std::fs::write(&response_path, format!("{}\n", response_str));
+                log::info!("command server: wrote response for uuid {}", uuid);
+            }
+        }
+    })
+    .detach();
+}
+
+/// Initialize the file-based command server for external tools (e.g., Talon voice control).
+/// Creates /tmp/zed-command-server-{uid}/ with a signals/ subdirectory.
+fn init_command_server() {
+    let dir = command_server_dir();
+    let signals_dir = dir.join("signals");
+    let _ = std::fs::create_dir_all(&signals_dir);
+    // Clean up any stale request/response files from a previous session
+    let _ = std::fs::remove_file(dir.join("request.json"));
+    let _ = std::fs::remove_file(dir.join("response.json"));
+    log::info!("command server: initialized at {:?}", dir);
+}
+
+/// Handle the cmd-shift-f17 keystroke that triggers command server request execution.
+fn execute_command_server_request(_workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    let dir = command_server_dir();
+    let request_path = dir.join("request.json");
+    let response_path = dir.join("response.json");
+
+    // Read the request file
+    let request_json = match std::fs::read_to_string(&request_path) {
+        Ok(json) => json,
+        Err(err) => {
+            log::warn!("command server: failed to read request.json: {}", err);
+            return;
+        }
+    };
+
+    // Parse the request
+    let request: serde_json::Value = match serde_json::from_str(&request_json) {
+        Ok(v) => v,
+        Err(err) => {
+            log::error!("command server: failed to parse request.json: {}", err);
+            write_command_response(&response_path, None, Some(&format!("parse error: {}", err)), &[]);
+            return;
+        }
+    };
+
+    let command_id = request.get("commandId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let uuid = request.get("uuid")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let args = request.get("args")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(vec![]));
+    let return_output = request.get("returnCommandOutput")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    log::info!("command server: executing command '{}' (uuid: {})", command_id, uuid);
+
+    // Serialize args to string for the WASM extension API
+    let args_str = serde_json::to_string(&args).unwrap_or_else(|_| "[]".to_string());
+
+    let extensions = get_wasm_extensions(cx);
+    let uuid_clone = uuid.clone();
+
+    cx.spawn(async move |_, _cx| {
+        let mut result_value: Option<serde_json::Value> = None;
+        let mut error_msg: Option<String> = None;
+
+        for ext in &extensions {
+            match ext.on_command(command_id.clone(), args_str.clone()).await {
+                Ok(Ok(result_json)) => {
+                    if return_output {
+                        result_value = serde_json::from_str(&result_json).ok();
+                    }
+                    break; // First extension to handle it wins
+                }
+                Ok(Err(err)) => {
+                    if err != "command not handled" {
+                        error_msg = Some(err);
+                        break;
+                    }
+                    // Extension didn't handle it, try next
+                }
+                Err(err) => {
+                    error_msg = Some(format!("extension error: {:#}", err));
+                    break;
+                }
+            }
+        }
+
+        // Write response
+        let response = serde_json::json!({
+            "uuid": uuid_clone,
+            "returnValue": result_value,
+            "error": error_msg,
+            "warnings": [],
+        });
+
+        if let Ok(response_str) = serde_json::to_string(&response) {
+            // Write with trailing newline to signal completion
+            let _ = std::fs::write(&response_path, format!("{}\n", response_str));
+        }
+    })
+    .detach();
+}
+
+fn write_command_response(
+    path: &std::path::Path,
+    uuid: Option<&str>,
+    error: Option<&str>,
+    warnings: &[String],
+) {
+    let response = serde_json::json!({
+        "uuid": uuid.unwrap_or(""),
+        "returnValue": null,
+        "error": error,
+        "warnings": warnings,
+    });
+    if let Ok(response_str) = serde_json::to_string(&response) {
+        let _ = std::fs::write(path, format!("{}\n", response_str));
     }
 }
 

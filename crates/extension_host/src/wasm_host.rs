@@ -528,6 +528,22 @@ impl extension::Extension for WasmExtension {
         })
         .await?
     }
+
+    async fn on_command(
+        &self,
+        command_id: String,
+        args: String,
+    ) -> Result<Result<String, String>> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_on_command(store, &command_id, &args)
+                    .await
+            }
+            .boxed()
+        })
+        .await?
+    }
 }
 
 pub struct WasmState {

@@ -42,4 +42,21 @@ interface editor {
     /// Returns the visible line range of the active editor.
     /// Returns None if no editor is focused.
     get-active-editor-visible-range: func() -> option<range>;
+
+    /// Sets the selections in the active editor.
+    /// Each selection is defined by a start and end position.
+    set-selections: func(selections: list<selection>);
+
+    /// Replaces text in the specified range with new text.
+    /// The range is specified as byte offsets (start, end).
+    replace-text-in-range: func(start-offset: u32, end-offset: u32, new-text: string);
+
+    /// Inserts text at the current cursor position(s).
+    insert-text: func(text: string);
+
+    /// Reveals the specified line in the editor viewport.
+    reveal-line: func(line: u32);
+
+    /// Copies the current selection(s) to the clipboard.
+    copy-selections-to-clipboard: func();
 }

@@ -187,6 +187,15 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Called when a command is received from an external source.
+    async fn on_command(
+        &self,
+        _command_id: String,
+        _args: String,
+    ) -> Result<Result<String, String>> {
+        Ok(Err("command not handled".to_string()))
+    }
 }
 
 pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {

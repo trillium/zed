@@ -1253,6 +1253,20 @@ impl Extension {
             _ => Ok(()),
         }
     }
+
+    pub async fn call_on_command(
+        &self,
+        store: &mut Store<WasmState>,
+        command_id: &str,
+        args: &str,
+    ) -> Result<Result<String, String>> {
+        match self {
+            Extension::V0_8_0(ext) => {
+                ext.call_on_command(store, command_id, args).await.map(|r| r.map_err(|e| e.to_string()))
+            }
+            _ => Ok(Err("command not handled".to_string())),
+        }
+    }
 }
 
 trait ToWasmtimeResult<T> {

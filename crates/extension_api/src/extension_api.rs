@@ -270,6 +270,18 @@ pub trait Extension: Send + Sync {
 
     /// Called when the active editor's visible range changes (e.g., scroll).
     fn on_editor_visible_range_change(&mut self, _start_line: u32, _end_line: u32) {}
+
+    /// Called when a command is received from an external source (e.g., voice control).
+    /// The command_id identifies the command (e.g., "cursorless.command").
+    /// The args is a JSON-encoded string of command arguments.
+    /// Returns a JSON-encoded result string, or an error.
+    fn on_command(
+        &mut self,
+        _command_id: String,
+        _args: String,
+    ) -> Result<String, String> {
+        Err("command not handled".to_string())
+    }
 }
 
 /// Registers the provided type as a Zed extension.
@@ -539,6 +551,10 @@ impl wit::Guest for Component {
 
     fn on_editor_visible_range_change(start_line: u32, end_line: u32) {
         extension().on_editor_visible_range_change(start_line, end_line)
+    }
+
+    fn on_command(command_id: String, args: String) -> Result<String, String> {
+        extension().on_command(command_id, args)
     }
 }
 

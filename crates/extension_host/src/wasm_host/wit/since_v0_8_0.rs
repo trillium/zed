@@ -1181,6 +1181,222 @@ impl editor::Host for WasmState {
             })
             .await)
     }
+
+    async fn set_selections(
+        &mut self,
+        selections: Vec<editor::Selection>,
+    ) -> wasmtime::Result<()> {
+        self.on_main_thread(move |cx| {
+            async move {
+                cx.update(|cx| {
+                    let multi_workspace = cx
+                        .active_window()
+                        .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                        .or_else(|| {
+                            cx.windows().into_iter().find_map(|w| {
+                                w.downcast::<workspace::MultiWorkspace>()
+                            })
+                        });
+                    if let Some(multi_workspace) = multi_workspace {
+                        let _ = multi_workspace.update(cx, |mw, window, cx| {
+                            let workspace = mw.workspace().read(cx);
+                            if let Some(ed) = workspace.active_item_as::<editor_crate::Editor>(cx) {
+                                ed.update(cx, |ed, cx| {
+                                    let buffer = ed.buffer().read(cx);
+                                    let snapshot = buffer.snapshot(cx);
+                                    let mut new_selections = Vec::new();
+                                    for sel in &selections {
+                                        let start = text::Point::new(sel.start.row, sel.start.column);
+                                        let end = text::Point::new(sel.end.row, sel.end.column);
+                                        let start_offset = snapshot.point_to_offset(start);
+                                        let end_offset = snapshot.point_to_offset(end);
+                                        let start_anchor = snapshot.anchor_at(start_offset, text::Bias::Left);
+                                        let end_anchor = snapshot.anchor_at(end_offset, text::Bias::Right);
+                                        new_selections.push(text::Selection {
+                                            id: new_selections.len(),
+                                            start: start_anchor,
+                                            end: end_anchor,
+                                            reversed: false,
+                                            goal: text::SelectionGoal::None,
+                                        });
+                                    }
+                                    if !new_selections.is_empty() {
+                                        ed.change_selections(Default::default(), window, cx, |sel| {
+                                            sel.select(new_selections);
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            .boxed_local()
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn replace_text_in_range(
+        &mut self,
+        start_offset: u32,
+        end_offset: u32,
+        new_text: String,
+    ) -> wasmtime::Result<()> {
+        self.on_main_thread(move |cx| {
+            async move {
+                cx.update(|cx| {
+                    let multi_workspace = cx
+                        .active_window()
+                        .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                        .or_else(|| {
+                            cx.windows().into_iter().find_map(|w| {
+                                w.downcast::<workspace::MultiWorkspace>()
+                            })
+                        });
+                    if let Some(multi_workspace) = multi_workspace {
+                        let _ = multi_workspace.update(cx, |mw, _window, cx| {
+                            let workspace = mw.workspace().read(cx);
+                            if let Some(ed) = workspace.active_item_as::<editor_crate::Editor>(cx) {
+                                ed.update(cx, |ed, cx| {
+                                    let buffer = ed.buffer().read(cx);
+                                    let snapshot = buffer.snapshot(cx);
+                                    let start = snapshot.anchor_at(
+                                        multi_buffer::MultiBufferOffset(start_offset as usize),
+                                        text::Bias::Left,
+                                    );
+                                    let end = snapshot.anchor_at(
+                                        multi_buffer::MultiBufferOffset(end_offset as usize),
+                                        text::Bias::Right,
+                                    );
+                                    drop(snapshot);
+                                    drop(buffer);
+                                    ed.edit([(start..end, new_text.as_str())], cx);
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            .boxed_local()
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn insert_text(&mut self, text: String) -> wasmtime::Result<()> {
+        self.on_main_thread(move |cx| {
+            async move {
+                cx.update(|cx| {
+                    let multi_workspace = cx
+                        .active_window()
+                        .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                        .or_else(|| {
+                            cx.windows().into_iter().find_map(|w| {
+                                w.downcast::<workspace::MultiWorkspace>()
+                            })
+                        });
+                    if let Some(multi_workspace) = multi_workspace {
+                        let _ = multi_workspace.update(cx, |mw, window, cx| {
+                            let workspace = mw.workspace().read(cx);
+                            if let Some(ed) = workspace.active_item_as::<editor_crate::Editor>(cx) {
+                                ed.update(cx, |ed, cx| {
+                                    ed.insert(&text, window, cx);
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            .boxed_local()
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn reveal_line(&mut self, line: u32) -> wasmtime::Result<()> {
+        self.on_main_thread(move |cx| {
+            async move {
+                cx.update(|cx| {
+                    let multi_workspace = cx
+                        .active_window()
+                        .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                        .or_else(|| {
+                            cx.windows().into_iter().find_map(|w| {
+                                w.downcast::<workspace::MultiWorkspace>()
+                            })
+                        });
+                    if let Some(multi_workspace) = multi_workspace {
+                        let _ = multi_workspace.update(cx, |mw, window, cx| {
+                            let workspace = mw.workspace().read(cx);
+                            if let Some(ed) = workspace.active_item_as::<editor_crate::Editor>(cx) {
+                                ed.update(cx, |ed, cx| {
+                                    let point = text::Point::new(line, 0);
+                                    let buffer = ed.buffer().read(cx);
+                                    let snapshot = buffer.read(cx);
+                                    let offset = snapshot.point_to_offset(point);
+                                    let anchor = snapshot.anchor_at(offset, text::Bias::Left);
+                                    drop(snapshot);
+                                    drop(buffer);
+                                    ed.set_scroll_anchor(
+                                        editor_crate::scroll::ScrollAnchor {
+                                            offset: gpui::Point::default(),
+                                            anchor,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            .boxed_local()
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn copy_selections_to_clipboard(&mut self) -> wasmtime::Result<()> {
+        self.on_main_thread(|cx| {
+            async move {
+                cx.update(|cx| {
+                    let multi_workspace = cx
+                        .active_window()
+                        .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                        .or_else(|| {
+                            cx.windows().into_iter().find_map(|w| {
+                                w.downcast::<workspace::MultiWorkspace>()
+                            })
+                        });
+                    if let Some(multi_workspace) = multi_workspace {
+                        let _ = multi_workspace.update(cx, |mw, _window, cx| {
+                            let workspace = mw.workspace().read(cx);
+                            if let Some(ed) = workspace.active_item_as::<editor_crate::Editor>(cx) {
+                                ed.update(cx, |ed, cx| {
+                                    let buffer = ed.buffer().read(cx);
+                                    let snapshot = buffer.snapshot(cx);
+                                    let display_snapshot = ed.display_snapshot(cx);
+                                    let selections = ed.selections.all::<multi_buffer::MultiBufferOffset>(&display_snapshot);
+                                    let mut text_parts = Vec::new();
+                                    for sel in &selections {
+                                        let text = snapshot.text_for_range(sel.start..sel.end).collect::<String>();
+                                        text_parts.push(text);
+                                    }
+                                    let combined = text_parts.join("\n");
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(combined));
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            .boxed_local()
+        })
+        .await;
+        Ok(())
+    }
 }
 
 impl dap::Host for WasmState {

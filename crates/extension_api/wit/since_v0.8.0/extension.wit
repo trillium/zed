@@ -179,4 +179,10 @@ world extension {
 
     /// Called when the active editor's visible range changes (e.g., scroll).
     export on-editor-visible-range-change: func(start-line: u32, end-line: u32);
+
+    /// Called when a command is received from an external source (e.g., voice control).
+    /// The command-id identifies the command (e.g., "cursorless.command").
+    /// The args is a JSON-encoded string of command arguments.
+    /// Returns a JSON-encoded string result, or an error string.
+    export on-command: func(command-id: string, args: string) -> result<string, string>;
 }
