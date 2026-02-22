@@ -23,6 +23,7 @@ use client::zed_urls;
 use collections::VecDeque;
 use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
+use extension::Extension as _;
 use extension_host::ExtensionStore;
 use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
 use fs::Fs;
@@ -399,6 +400,27 @@ pub fn initialize_workspace(
                     title,
                     language,
                 } => open_bundled_file(workspace, text.clone(), title, language, window, cx),
+                workspace::Event::ActiveItemChanged => {
+                    // Dispatch active editor change to WASM extensions
+                    let file_path = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.project_path(cx))
+                        .map(|pp| pp.path.as_unix_str().to_string());
+                    let extension_store = ExtensionStore::global(cx);
+                    let extensions: Vec<_> = extension_store
+                        .read(cx)
+                        .wasm_extensions
+                        .iter()
+                        .map(|(_, ext)| ext.clone())
+                        .collect();
+                    for ext in extensions {
+                        let fp = file_path.clone();
+                        cx.spawn(async move |_, _cx| {
+                            let _ = ext.on_active_editor_change(fp).await;
+                        })
+                        .detach();
+                    }
+                }
                 _ => {}
             }
         })
