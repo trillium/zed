@@ -391,37 +391,62 @@ pub fn initialize_workspace(
         initialize_pane(workspace, &center_pane, window, cx);
 
         cx.subscribe_in(&workspace_handle, window, {
-            move |workspace, _, event, window, cx| match event {
+            let mut _editor_subscriptions: Vec<gpui::Subscription> = Vec::new();
+            move |workspace, _, event, _window, cx| match event {
                 workspace::Event::PaneAdded(pane) => {
-                    initialize_pane(workspace, pane, window, cx);
+                    initialize_pane(workspace, pane, _window, cx);
                 }
                 workspace::Event::OpenBundledFile {
                     text,
                     title,
                     language,
-                } => open_bundled_file(workspace, text.clone(), title, language, window, cx),
+                } => open_bundled_file(workspace, text.clone(), title, language, _window, cx),
                 workspace::Event::ActiveItemChanged => {
-                    // Dispatch active editor change to WASM extensions
-                    let file_path = workspace
+                    dispatch_active_editor_change(workspace, cx);
+                    // Subscribe to active editor events for content/scroll changes
+                    _editor_subscriptions.clear();
+                    if let Some(editor) = workspace
                         .active_item(cx)
-                        .and_then(|item| item.project_path(cx))
-                        .map(|pp| pp.path.as_unix_str().to_string());
-                    let extension_store = ExtensionStore::global(cx);
-                    let extensions: Vec<_> = extension_store
-                        .read(cx)
-                        .wasm_extensions
-                        .iter()
-                        .map(|(_, ext)| ext.clone())
-                        .collect();
-                    for ext in extensions {
-                        let fp = file_path.clone();
-                        cx.spawn(async move |_, _cx| {
-                            let _ = ext.on_active_editor_change(fp).await;
-                        })
-                        .detach();
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                    {
+                        _editor_subscriptions.push(cx.subscribe(
+                            &editor,
+                            |workspace, editor_entity, event: &editor::EditorEvent, cx| {
+                                match event {
+                                    editor::EditorEvent::BufferEdited => {
+                                        dispatch_editor_content_change(workspace, cx);
+                                    }
+                                    editor::EditorEvent::ScrollPositionChanged { .. } => {
+                                        let (start, end) = editor_entity.update(cx, |editor, ecx| {
+                                            let scroll_pos = editor.scroll_position(ecx);
+                                            let start_line = scroll_pos.y as u32;
+                                            let visible = editor.visible_line_count().unwrap_or(0.0);
+                                            (start_line, start_line + visible.ceil() as u32)
+                                        });
+                                        dispatch_editor_visible_range_change(start, end, cx);
+                                    }
+                                    _ => {}
+                                }
+                            },
+                        ));
                     }
                 }
                 _ => {}
+            }
+        })
+        .detach();
+
+        // When extensions finish loading, dispatch the current editor state
+        // so extensions that care about editor state get the initial state.
+        let extension_store = ExtensionStore::global(cx);
+        cx.observe(&extension_store, {
+            let mut dispatched = false;
+            move |workspace: &mut Workspace, store, cx| {
+                if !dispatched && !store.read(cx).wasm_extensions.is_empty() {
+                    dispatched = true;
+                    log::info!("WASM extensions loaded - dispatching initial editor state");
+                    dispatch_active_editor_change(workspace, cx);
+                }
             }
         })
         .detach();
@@ -1183,6 +1208,73 @@ fn register_actions(
                 .detach_and_log_err(cx);
             }
         });
+    }
+}
+
+fn get_active_file_path(workspace: &Workspace, cx: &Context<Workspace>) -> Option<String> {
+    workspace
+        .active_item(cx)
+        .and_then(|item| {
+            let path = item.project_path(cx)?;
+            let worktree = workspace.project().read(cx).worktree_for_id(path.worktree_id, cx)?;
+            let abs = worktree.read(cx).abs_path().join(std::path::Path::new(path.path.as_unix_str()));
+            Some(abs.to_string_lossy().to_string())
+        })
+}
+
+fn get_wasm_extensions(
+    cx: &Context<Workspace>,
+) -> Vec<extension_host::wasm_host::WasmExtension> {
+    let extension_store = ExtensionStore::global(cx);
+    extension_store
+        .read(cx)
+        .wasm_extensions
+        .iter()
+        .map(|(_, ext)| ext.clone())
+        .collect()
+}
+
+fn dispatch_active_editor_change(workspace: &Workspace, cx: &mut Context<Workspace>) {
+    let file_path = get_active_file_path(workspace, cx);
+    let extensions = get_wasm_extensions(cx);
+    for ext in extensions {
+        let fp = file_path.clone();
+        cx.spawn(async move |_, _cx| {
+            if let Err(err) = ext.on_active_editor_change(fp).await {
+                log::error!("extension on_active_editor_change failed: {:#}", err);
+            }
+        })
+        .detach();
+    }
+}
+
+fn dispatch_editor_content_change(workspace: &Workspace, cx: &mut Context<Workspace>) {
+    let file_path = get_active_file_path(workspace, cx);
+    let extensions = get_wasm_extensions(cx);
+    for ext in extensions {
+        let fp = file_path.clone();
+        cx.spawn(async move |_, _cx| {
+            if let Err(err) = ext.on_editor_content_change(fp).await {
+                log::error!("extension on_editor_content_change failed: {:#}", err);
+            }
+        })
+        .detach();
+    }
+}
+
+fn dispatch_editor_visible_range_change(
+    start_line: u32,
+    end_line: u32,
+    cx: &mut Context<Workspace>,
+) {
+    let extensions = get_wasm_extensions(cx);
+    for ext in extensions {
+        cx.spawn(async move |_, _cx| {
+            if let Err(err) = ext.on_editor_visible_range_change(start_line, end_line).await {
+                log::error!("extension on_editor_visible_range_change failed: {:#}", err);
+            }
+        })
+        .detach();
     }
 }
 

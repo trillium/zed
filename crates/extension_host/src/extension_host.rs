@@ -1448,6 +1448,7 @@ impl ExtensionStore {
                 this.proxy.set_extensions_loaded();
                 this.proxy.reload_current_theme(cx);
                 this.proxy.reload_current_icon_theme(cx);
+                cx.notify();
 
                 if let Some(events) = ExtensionEvents::try_global(cx) {
                     events.update(cx, |this, cx| {

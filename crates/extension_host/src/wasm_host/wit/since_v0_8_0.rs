@@ -1033,14 +1033,31 @@ impl editor::Host for WasmState {
             .on_main_thread(|cx| {
                 async move {
                     cx.update(|cx| {
-                        let window = cx.active_window()?;
-                        let multi_workspace =
-                            window.downcast::<workspace::MultiWorkspace>()?;
+                        // Try active window first, then fall back to any MultiWorkspace window.
+                        // During startup, the platform may not report an active window yet.
+                        let multi_workspace = cx
+                            .active_window()
+                            .and_then(|w| w.downcast::<workspace::MultiWorkspace>())
+                            .or_else(|| {
+                                cx.windows().into_iter().find_map(|w| {
+                                    w.downcast::<workspace::MultiWorkspace>()
+                                })
+                            });
+                        if multi_workspace.is_none() {
+                            log::warn!("get_active_editor_state: no MultiWorkspace window found");
+                            return None;
+                        }
+                        let multi_workspace = multi_workspace?;
                         multi_workspace
                             .update(cx, |mw, _window, cx| {
                                 let workspace = mw.workspace().read(cx);
                                 let ed = workspace
-                                    .active_item_as::<editor_crate::Editor>(cx)?;
+                                    .active_item_as::<editor_crate::Editor>(cx);
+                                if ed.is_none() {
+                                    log::warn!("get_active_editor_state: no active editor");
+                                    return None;
+                                }
+                                let ed = ed?;
                                 Some(ed.update(cx, |ed, cx| {
                                     let mb_snapshot = ed.buffer().read(cx).read(cx);
                                     let text = mb_snapshot.text();

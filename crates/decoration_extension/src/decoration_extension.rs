@@ -36,8 +36,16 @@ impl DecorationProxyImpl {
         cx: &mut App,
         f: impl FnOnce(&mut Editor, &mut gpui::Context<Editor>) -> R,
     ) -> Option<R> {
-        let window = cx.active_window()?;
-        let multi_workspace = window.downcast::<MultiWorkspace>()?;
+        // Try active window first, fall back to any MultiWorkspace window.
+        // During startup the platform may not yet report an active window.
+        let multi_workspace = cx
+            .active_window()
+            .and_then(|w| w.downcast::<MultiWorkspace>())
+            .or_else(|| {
+                cx.windows()
+                    .into_iter()
+                    .find_map(|w| w.downcast::<MultiWorkspace>())
+            })?;
         multi_workspace
             .update(cx, |mw, _window, cx| {
                 let workspace = mw.workspace().read(cx);
@@ -111,10 +119,13 @@ impl ExtensionDecorationProxy for DecorationProxyImpl {
         cx: &mut App,
     ) -> u64 {
         let editor_options = convert_render_options(options);
-        self.with_active_editor(cx, |editor, _cx| {
-            editor.create_decoration_type(editor_options).0 as u64
-        })
-        .unwrap_or(0)
+        let result = self
+            .with_active_editor(cx, |editor, _cx| {
+                editor.create_decoration_type(editor_options).0 as u64
+            })
+            .unwrap_or(0);
+        log::info!("create_decoration_type -> {}", result);
+        result
     }
 
     fn set_decorations(
@@ -123,6 +134,11 @@ impl ExtensionDecorationProxy for DecorationProxyImpl {
         decorations: Vec<ExtensionDecoration>,
         cx: &mut App,
     ) -> Vec<u64> {
+        log::info!(
+            "set_decorations: type_id={}, count={}",
+            type_id,
+            decorations.len()
+        );
         let next_id = &self.next_decoration_id;
 
         self.with_active_editor(cx, |editor, cx| {
