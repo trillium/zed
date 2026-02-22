@@ -168,6 +168,25 @@ pub trait Extension: Send + Sync + 'static {
         locator_name: String,
         config: SpawnInTerminal,
     ) -> Result<DebugRequest>;
+
+    /// Called when the active editor changes.
+    async fn on_active_editor_change(&self, _file_path: Option<String>) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called when the active editor's buffer content changes.
+    async fn on_editor_content_change(&self, _file_path: Option<String>) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called when the active editor's visible range changes.
+    async fn on_editor_visible_range_change(
+        &self,
+        _start_line: u32,
+        _end_line: u32,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn parse_wasm_extension_version(extension_id: &str, wasm_bytes: &[u8]) -> Result<Version> {

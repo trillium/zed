@@ -4,6 +4,7 @@ world extension {
     import context-server;
     import dap;
     import decoration;
+    import editor;
     import github;
     import http-client;
     import platform;
@@ -167,4 +168,15 @@ world extension {
     export dap-config-to-scenario: func(config: debug-config) -> result<debug-scenario, string>;
     export dap-locator-create-scenario: func(locator-name: string, build-config-template: build-task-template, resolved-label: string, debug-adapter-name: string) -> option<debug-scenario>;
     export run-dap-locator: func(locator-name: string, config: resolved-task) -> result<debug-request, string>;
+
+    /// Called when the active editor changes (e.g., user switches tabs).
+    /// Receives the file path of the new active editor, if any.
+    export on-active-editor-change: func(file-path: option<string>);
+
+    /// Called when the active editor's buffer content changes.
+    /// Receives the file path of the changed buffer, if any.
+    export on-editor-content-change: func(file-path: option<string>);
+
+    /// Called when the active editor's visible range changes (e.g., scroll).
+    export on-editor-visible-range-change: func(start-line: u32, end-line: u32);
 }

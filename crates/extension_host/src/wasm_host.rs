@@ -488,6 +488,46 @@ impl extension::Extension for WasmExtension {
         })
         .await?
     }
+
+    async fn on_active_editor_change(&self, file_path: Option<String>) -> Result<()> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_on_active_editor_change(store, file_path.as_deref())
+                    .await
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn on_editor_content_change(&self, file_path: Option<String>) -> Result<()> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_on_editor_content_change(store, file_path.as_deref())
+                    .await
+            }
+            .boxed()
+        })
+        .await?
+    }
+
+    async fn on_editor_visible_range_change(
+        &self,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<()> {
+        self.call(move |extension, store| {
+            async move {
+                extension
+                    .call_on_editor_visible_range_change(store, start_line, end_line)
+                    .await
+            }
+            .boxed()
+        })
+        .await?
+    }
 }
 
 pub struct WasmState {

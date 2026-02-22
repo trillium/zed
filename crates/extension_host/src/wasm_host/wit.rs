@@ -1212,6 +1212,47 @@ impl Extension {
             }
         }
     }
+
+    pub async fn call_on_active_editor_change(
+        &self,
+        store: &mut Store<WasmState>,
+        file_path: Option<&str>,
+    ) -> Result<()> {
+        match self {
+            Extension::V0_8_0(ext) => {
+                ext.call_on_active_editor_change(store, file_path).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn call_on_editor_content_change(
+        &self,
+        store: &mut Store<WasmState>,
+        file_path: Option<&str>,
+    ) -> Result<()> {
+        match self {
+            Extension::V0_8_0(ext) => {
+                ext.call_on_editor_content_change(store, file_path).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn call_on_editor_visible_range_change(
+        &self,
+        store: &mut Store<WasmState>,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<()> {
+        match self {
+            Extension::V0_8_0(ext) => {
+                ext.call_on_editor_visible_range_change(store, start_line, end_line)
+                    .await
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 trait ToWasmtimeResult<T> {

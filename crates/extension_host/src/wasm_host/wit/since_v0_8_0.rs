@@ -1,3 +1,4 @@
+use ::editor as editor_crate;
 use crate::wasm_host::wit::since_v0_6_0::{
     dap::{
         BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, StartDebuggingRequestArguments,
@@ -1019,6 +1020,143 @@ impl decoration::Host for WasmState {
             .on_main_thread(move |cx| {
                 async move { cx.update(|cx| proxy.dispose_decoration_type(type_id, cx)) }
                     .boxed_local()
+            })
+            .await)
+    }
+}
+
+impl editor::Host for WasmState {
+    async fn get_active_editor_state(
+        &mut self,
+    ) -> wasmtime::Result<Option<editor::EditorState>> {
+        Ok(self
+            .on_main_thread(|cx| {
+                async move {
+                    cx.update(|cx| {
+                        let window = cx.active_window()?;
+                        let multi_workspace =
+                            window.downcast::<workspace::MultiWorkspace>()?;
+                        multi_workspace
+                            .update(cx, |mw, _window, cx| {
+                                let workspace = mw.workspace().read(cx);
+                                let ed = workspace
+                                    .active_item_as::<editor_crate::Editor>(cx)?;
+                                Some(ed.update(cx, |ed, cx| {
+                                    let mb_snapshot = ed.buffer().read(cx).read(cx);
+                                    let text = mb_snapshot.text();
+
+                                    let file_path = mb_snapshot
+                                        .file_at(multi_buffer::MultiBufferOffset(0))
+                                        .map(|f: &Arc<dyn language::File>| {
+                                            f.path().as_unix_str().to_string()
+                                        });
+
+                                    let language = mb_snapshot
+                                        .language_at(multi_buffer::MultiBufferOffset(0))
+                                        .map(|l| l.name().to_string());
+
+                                    drop(mb_snapshot);
+
+                                    let display_snapshot = ed.display_snapshot(cx);
+                                    let selections: Vec<editor::Selection> = ed
+                                        .selections
+                                        .all::<text::Point>(&display_snapshot)
+                                        .iter()
+                                        .map(|s| editor::Selection {
+                                            start: editor::Position {
+                                                row: s.start.row,
+                                                column: s.start.column,
+                                            },
+                                            end: editor::Position {
+                                                row: s.end.row,
+                                                column: s.end.column,
+                                            },
+                                        })
+                                        .collect();
+
+                                    let visible_range =
+                                        ed.visible_line_count().map_or(
+                                            common::Range { start: 0, end: 0 },
+                                            |count| {
+                                                let scroll_pos = ed.scroll_position(cx);
+                                                let start = scroll_pos.y as u32;
+                                                let end = start + count as u32;
+                                                common::Range { start, end }
+                                            },
+                                        );
+
+                                    editor::EditorState {
+                                        text,
+                                        file_path,
+                                        language,
+                                        selections,
+                                        visible_range,
+                                    }
+                                }))
+                            })
+                            .ok()?
+                    })
+                }
+                .boxed_local()
+            })
+            .await)
+    }
+
+    async fn get_active_editor_text(&mut self) -> wasmtime::Result<Option<String>> {
+        Ok(self
+            .on_main_thread(|cx| {
+                async move {
+                    cx.update(|cx| {
+                        let window = cx.active_window()?;
+                        let multi_workspace =
+                            window.downcast::<workspace::MultiWorkspace>()?;
+                        multi_workspace
+                            .update(cx, |mw, _window, cx| {
+                                let workspace = mw.workspace().read(cx);
+                                let ed = workspace
+                                    .active_item_as::<editor_crate::Editor>(cx)?;
+                                Some(ed.update(cx, |ed, cx| {
+                                    let buffer = ed.buffer().read(cx);
+                                    let snapshot = buffer.snapshot(cx);
+                                    snapshot.text()
+                                }))
+                            })
+                            .ok()?
+                    })
+                }
+                .boxed_local()
+            })
+            .await)
+    }
+
+    async fn get_active_editor_visible_range(
+        &mut self,
+    ) -> wasmtime::Result<Option<common::Range>> {
+        Ok(self
+            .on_main_thread(|cx| {
+                async move {
+                    cx.update(|cx| {
+                        let window = cx.active_window()?;
+                        let multi_workspace =
+                            window.downcast::<workspace::MultiWorkspace>()?;
+                        multi_workspace
+                            .update(cx, |mw, _window, cx| {
+                                let workspace = mw.workspace().read(cx);
+                                let ed = workspace
+                                    .active_item_as::<editor_crate::Editor>(cx)?;
+                                Some(ed.update(cx, |ed, cx| {
+                                    let count =
+                                        ed.visible_line_count().unwrap_or(50.0);
+                                    let scroll_pos = ed.scroll_position(cx);
+                                    let start = scroll_pos.y as u32;
+                                    let end = start + count as u32;
+                                    common::Range { start, end }
+                                }))
+                            })
+                            .ok()?
+                    })
+                }
+                .boxed_local()
             })
             .await)
     }

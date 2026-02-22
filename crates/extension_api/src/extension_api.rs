@@ -1,6 +1,7 @@
 //! The Zed Rust Extension API allows you write extensions for [Zed](https://zed.dev/) in Rust.
 
 pub mod decoration;
+pub mod editor;
 pub mod http_client;
 pub mod process;
 pub mod settings;
@@ -260,6 +261,15 @@ pub trait Extension: Send + Sync {
     ) -> Result<DebugRequest, String> {
         Err("`run_dap_locator` not implemented".to_string())
     }
+
+    /// Called when the active editor changes (e.g., user switches tabs).
+    fn on_active_editor_change(&mut self, _file_path: Option<String>) {}
+
+    /// Called when the active editor's buffer content changes.
+    fn on_editor_content_change(&mut self, _file_path: Option<String>) {}
+
+    /// Called when the active editor's visible range changes (e.g., scroll).
+    fn on_editor_visible_range_change(&mut self, _start_line: u32, _end_line: u32) {}
 }
 
 /// Registers the provided type as a Zed extension.
@@ -517,6 +527,18 @@ impl wit::Guest for Component {
         build_task: TaskTemplate,
     ) -> Result<DebugRequest, String> {
         extension().run_dap_locator(locator_name, build_task)
+    }
+
+    fn on_active_editor_change(file_path: Option<String>) {
+        extension().on_active_editor_change(file_path)
+    }
+
+    fn on_editor_content_change(file_path: Option<String>) {
+        extension().on_editor_content_change(file_path)
+    }
+
+    fn on_editor_visible_range_change(start_line: u32, end_line: u32) {
+        extension().on_editor_visible_range_change(start_line, end_line)
     }
 }
 

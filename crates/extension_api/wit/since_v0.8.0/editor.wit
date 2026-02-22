@@ -1,0 +1,45 @@
+interface editor {
+    use common.{range};
+
+    /// A position in the editor (row, column).
+    record position {
+        /// Zero-based line number.
+        row: u32,
+        /// Zero-based column (UTF-8 byte offset within the line).
+        column: u32,
+    }
+
+    /// A selection in the editor.
+    record selection {
+        /// The start of the selection (anchor).
+        start: position,
+        /// The end of the selection (head/cursor).
+        end: position,
+    }
+
+    /// State of the active editor.
+    record editor-state {
+        /// The full text content of the active buffer.
+        text: string,
+        /// The file path of the active buffer, if any.
+        file-path: option<string>,
+        /// The language ID of the active buffer (e.g., "rust", "python").
+        language: option<string>,
+        /// The current selections (cursors) in the editor.
+        selections: list<selection>,
+        /// The visible range of lines in the editor viewport.
+        visible-range: range,
+    }
+
+    /// Returns the state of the active editor.
+    /// Returns None if no editor is focused.
+    get-active-editor-state: func() -> option<editor-state>;
+
+    /// Returns the text content of the active editor's buffer.
+    /// Returns None if no editor is focused.
+    get-active-editor-text: func() -> option<string>;
+
+    /// Returns the visible line range of the active editor.
+    /// Returns None if no editor is focused.
+    get-active-editor-visible-range: func() -> option<range>;
+}
