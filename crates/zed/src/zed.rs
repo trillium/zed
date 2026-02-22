@@ -411,20 +411,13 @@ pub fn initialize_workspace(
                     {
                         _editor_subscriptions.push(cx.subscribe(
                             &editor,
-                            |workspace, editor_entity, event: &editor::EditorEvent, cx| {
+                            |workspace, _editor_entity, event: &editor::EditorEvent, cx| {
                                 match event {
                                     editor::EditorEvent::BufferEdited => {
                                         dispatch_editor_content_change(workspace, cx);
                                     }
-                                    editor::EditorEvent::ScrollPositionChanged { .. } => {
-                                        let (start, end) = editor_entity.update(cx, |editor, ecx| {
-                                            let scroll_pos = editor.scroll_position(ecx);
-                                            let start_line = scroll_pos.y as u32;
-                                            let visible = editor.visible_line_count().unwrap_or(0.0);
-                                            (start_line, start_line + visible.ceil() as u32)
-                                        });
-                                        dispatch_editor_visible_range_change(start, end, cx);
-                                    }
+                                    // TODO: Dispatch scroll events with debouncing for
+                                    // viewport-only hat rendering optimization.
                                     _ => {}
                                 }
                             },
@@ -1262,6 +1255,7 @@ fn dispatch_editor_content_change(workspace: &Workspace, cx: &mut Context<Worksp
     }
 }
 
+#[allow(dead_code)]
 fn dispatch_editor_visible_range_change(
     start_line: u32,
     end_line: u32,
