@@ -58,7 +58,7 @@ pub(crate) use actions::*;
 pub use decorations::{
     Decoration, DecorationContent, DecorationId, DecorationRangeBehavior, DecorationRegistry,
     DecorationRegistryStats, DecorationRenderOptions, DecorationStyle, DecorationType,
-    DecorationTypeId, ThemedDecorationStyle, cursorless_helpers,
+    DecorationTypeId, ThemedDecorationStyle,
 };
 pub use display_map::{
     ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey,
@@ -350,7 +350,6 @@ pub fn init(cx: &mut App) {
             workspace.register_action(Editor::new_file_horizontal);
             workspace.register_action(Editor::cancel_language_server_work);
             workspace.register_action(Editor::toggle_focus);
-            workspace.register_action(Editor::show_test_hats);
         },
     )
     .detach();
@@ -7949,38 +7948,6 @@ impl Editor {
             .ok()
         })
         .detach();
-    }
-
-    pub fn show_test_hats(
-        workspace: &mut Workspace,
-        _: &actions::ShowTestHats,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        use decorations::hat_renderer::HatRenderer;
-        use decorations::cursorless_helpers::{HatColor, HatShape};
-
-        // Get the active editor from the workspace
-        let Some(active_editor) = workspace.active_item_as::<Self>(cx) else {
-            return;
-        };
-
-        active_editor.update(cx, |editor, cx| {
-            let test_hats = vec![
-                (HatColor::Blue, HatShape::Default),
-                (HatColor::Red, HatShape::Bolt),
-                (HatColor::Green, HatShape::Curve),
-                (HatColor::Yellow, HatShape::Fox),
-                (HatColor::Pink, HatShape::Wing),
-            ];
-
-            let mut renderer = HatRenderer::new();
-            renderer.assign_hats(editor, test_hats, cx);
-
-            cx.notify();
-
-            log::info!("Test hats displayed! Press the command again to see different tokens.");
-        });
     }
 
     pub fn accept_partial_edit_prediction(

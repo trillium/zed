@@ -14,7 +14,8 @@ use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use extension::{
-    ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
+    ExtensionDecorationProxy, ExtensionLanguageServerProxy, KeyValueStoreDelegate,
+    ProjectDelegate, WorktreeDelegate,
 };
 use futures::{AsyncReadExt, lock::Mutex};
 use futures::{FutureExt as _, io::BufReader};
@@ -886,6 +887,142 @@ impl slash_command::Host for WasmState {}
 
 #[async_trait]
 impl context_server::Host for WasmState {}
+
+// Type conversions: WIT decoration types → extension proxy types
+
+impl From<decoration::Color> for gpui::Hsla {
+    fn from(color: decoration::Color) -> Self {
+        gpui::Hsla {
+            h: color.h,
+            s: color.s,
+            l: color.l,
+            a: color.a,
+        }
+    }
+}
+
+fn convert_decoration_style(
+    style: decoration::DecorationStyle,
+) -> extension::ExtensionDecorationStyle {
+    extension::ExtensionDecorationStyle {
+        background_color: style.background_color.map(Into::into),
+        border_color: style.border_color,
+        border_style: style.border_style,
+        border_width: style.border_width,
+        border_radius: style.border_radius,
+        margin: style.margin,
+        z_index: style.z_index,
+    }
+}
+
+fn convert_themed_style(
+    style: decoration::ThemedDecorationStyle,
+) -> extension::ExtensionThemedDecorationStyle {
+    extension::ExtensionThemedDecorationStyle {
+        base: convert_decoration_style(style.base),
+        light: style.light.map(convert_decoration_style),
+        dark: style.dark.map(convert_decoration_style),
+    }
+}
+
+fn convert_decoration_content(
+    content: decoration::DecorationContent,
+) -> extension::ExtensionDecorationContent {
+    match content {
+        decoration::DecorationContent::Text(t) => extension::ExtensionDecorationContent::Text(t),
+        decoration::DecorationContent::Svg(svg) => extension::ExtensionDecorationContent::Svg {
+            source: svg.source,
+            width_px: svg.width_px,
+            height_px: svg.height_px,
+        },
+        decoration::DecorationContent::Image(img) => {
+            extension::ExtensionDecorationContent::Image {
+                source: img.source,
+                width_px: img.width_px,
+                height_px: img.height_px,
+            }
+        }
+    }
+}
+
+fn convert_decoration_render_options(
+    options: decoration::DecorationRenderOptions,
+) -> extension::ExtensionDecorationRenderOptions {
+    extension::ExtensionDecorationRenderOptions {
+        decoration_type: match options.decoration_type {
+            decoration::DecorationType::Before => extension::ExtensionDecorationType::Before,
+            decoration::DecorationType::After => extension::ExtensionDecorationType::After,
+            decoration::DecorationType::Range => extension::ExtensionDecorationType::Range,
+            decoration::DecorationType::WholeLine => extension::ExtensionDecorationType::WholeLine,
+        },
+        content: options.content.map(convert_decoration_content),
+        style: convert_themed_style(options.style),
+        range_behavior: match options.range_behavior {
+            decoration::DecorationRangeBehavior::OpenOpen => {
+                extension::ExtensionDecorationRangeBehavior::OpenOpen
+            }
+            decoration::DecorationRangeBehavior::OpenClosed => {
+                extension::ExtensionDecorationRangeBehavior::OpenClosed
+            }
+            decoration::DecorationRangeBehavior::ClosedOpen => {
+                extension::ExtensionDecorationRangeBehavior::ClosedOpen
+            }
+            decoration::DecorationRangeBehavior::ClosedClosed => {
+                extension::ExtensionDecorationRangeBehavior::ClosedClosed
+            }
+        },
+    }
+}
+
+impl decoration::Host for WasmState {
+    async fn create_decoration_type(
+        &mut self,
+        options: decoration::DecorationRenderOptions,
+    ) -> wasmtime::Result<u64> {
+        let ext_options = convert_decoration_render_options(options);
+        let proxy = self.host.proxy.clone();
+        Ok(self
+            .on_main_thread(move |cx| {
+                async move { cx.update(|cx| proxy.create_decoration_type(ext_options, cx)) }
+                    .boxed_local()
+            })
+            .await)
+    }
+
+    async fn set_decorations(
+        &mut self,
+        type_id: u64,
+        decorations: Vec<decoration::Decoration>,
+    ) -> wasmtime::Result<Vec<u64>> {
+        let ext_decorations: Vec<extension::ExtensionDecoration> = decorations
+            .into_iter()
+            .map(|d| extension::ExtensionDecoration {
+                range_start: d.range.start,
+                range_end: d.range.end,
+            })
+            .collect();
+        let proxy = self.host.proxy.clone();
+        Ok(self
+            .on_main_thread(move |cx| {
+                async move { cx.update(|cx| proxy.set_decorations(type_id, ext_decorations, cx)) }
+                    .boxed_local()
+            })
+            .await)
+    }
+
+    async fn dispose_decoration_type(
+        &mut self,
+        type_id: u64,
+    ) -> wasmtime::Result<bool> {
+        let proxy = self.host.proxy.clone();
+        Ok(self
+            .on_main_thread(move |cx| {
+                async move { cx.update(|cx| proxy.dispose_decoration_type(type_id, cx)) }
+                    .boxed_local()
+            })
+            .await)
+    }
+}
 
 impl dap::Host for WasmState {
     async fn resolve_tcp_template(

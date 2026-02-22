@@ -4704,6 +4704,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "decoration_extension"
+version = "0.1.0"
+dependencies = [
+ "editor",
+ "extension",
+ "gpui",
+ "multi_buffer",
+ "text",
+ "workspace",
+]
+
+[[package]]
 name = "deepseek"
 version = "0.1.0"
 dependencies = [
@@ -21240,6 +21252,7 @@ dependencies = [
  "debug_adapter_extension",
  "debugger_tools",
  "debugger_ui",
+ "decoration_extension",
  "dev_container",
  "diagnostics",
  "edit_prediction",

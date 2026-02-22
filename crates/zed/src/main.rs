@@ -588,6 +588,7 @@ fn main() {
 
         theme::init(theme::LoadThemes::All(Box::new(Assets)), cx);
         eager_load_active_theme_and_icon_theme(fs.clone(), cx);
+        decoration_extension::init(extension_host_proxy.clone());
         theme_extension::init(
             extension_host_proxy,
             ThemeRegistry::global(cx),

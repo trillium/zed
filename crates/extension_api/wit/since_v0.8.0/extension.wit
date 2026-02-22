@@ -3,8 +3,7 @@ package zed:extension;
 world extension {
     import context-server;
     import dap;
-    // TEMPORARILY COMMENTED OUT - decoration Host implementation not yet added
-    // import decoration;
+    import decoration;
     import github;
     import http-client;
     import platform;

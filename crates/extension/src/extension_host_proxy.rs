@@ -8,7 +8,9 @@ use language::{BinaryStatus, LanguageMatcher, LanguageName, LoadedLanguage};
 use lsp::LanguageServerName;
 use parking_lot::RwLock;
 
-use crate::{Extension, SlashCommand};
+use crate::{
+    Extension, ExtensionDecoration, ExtensionDecorationRenderOptions, SlashCommand,
+};
 
 #[derive(Default)]
 struct GlobalExtensionHostProxy(Arc<ExtensionHostProxy>);
@@ -33,6 +35,7 @@ pub struct ExtensionHostProxy {
     context_server_proxy: RwLock<Option<Arc<dyn ExtensionContextServerProxy>>>,
     debug_adapter_provider_proxy: RwLock<Option<Arc<dyn ExtensionDebugAdapterProviderProxy>>>,
     language_model_provider_proxy: RwLock<Option<Arc<dyn ExtensionLanguageModelProviderProxy>>>,
+    decoration_proxy: RwLock<Option<Arc<dyn ExtensionDecorationProxy>>>,
 }
 
 impl ExtensionHostProxy {
@@ -59,6 +62,7 @@ impl ExtensionHostProxy {
             context_server_proxy: RwLock::default(),
             debug_adapter_provider_proxy: RwLock::default(),
             language_model_provider_proxy: RwLock::default(),
+            decoration_proxy: RwLock::default(),
         }
     }
 
@@ -103,6 +107,10 @@ impl ExtensionHostProxy {
         self.language_model_provider_proxy
             .write()
             .replace(Arc::new(proxy));
+    }
+
+    pub fn register_decoration_proxy(&self, proxy: impl ExtensionDecorationProxy) {
+        self.decoration_proxy.write().replace(Arc::new(proxy));
     }
 }
 
@@ -494,5 +502,57 @@ impl ExtensionLanguageModelProviderProxy for ExtensionHostProxy {
         };
 
         proxy.unregister_language_model_provider(provider_id, cx)
+    }
+}
+
+pub trait ExtensionDecorationProxy: Send + Sync + 'static {
+    fn create_decoration_type(
+        &self,
+        options: ExtensionDecorationRenderOptions,
+        cx: &mut App,
+    ) -> u64;
+
+    fn set_decorations(
+        &self,
+        type_id: u64,
+        decorations: Vec<ExtensionDecoration>,
+        cx: &mut App,
+    ) -> Vec<u64>;
+
+    fn dispose_decoration_type(&self, type_id: u64, cx: &mut App) -> bool;
+}
+
+impl ExtensionDecorationProxy for ExtensionHostProxy {
+    fn create_decoration_type(
+        &self,
+        options: ExtensionDecorationRenderOptions,
+        cx: &mut App,
+    ) -> u64 {
+        let Some(proxy) = self.decoration_proxy.read().clone() else {
+            return 0;
+        };
+
+        proxy.create_decoration_type(options, cx)
+    }
+
+    fn set_decorations(
+        &self,
+        type_id: u64,
+        decorations: Vec<ExtensionDecoration>,
+        cx: &mut App,
+    ) -> Vec<u64> {
+        let Some(proxy) = self.decoration_proxy.read().clone() else {
+            return vec![];
+        };
+
+        proxy.set_decorations(type_id, decorations, cx)
+    }
+
+    fn dispose_decoration_type(&self, type_id: u64, cx: &mut App) -> bool {
+        let Some(proxy) = self.decoration_proxy.read().clone() else {
+            return false;
+        };
+
+        proxy.dispose_decoration_type(type_id, cx)
     }
 }

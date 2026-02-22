@@ -6914,6 +6914,10 @@ impl EditorElement {
                         }
                     }
                 }
+                DecorationType::After => {
+                    // After decorations are not yet rendered differently from Before.
+                    // For now, skip them. Future: render content after the character.
+                }
                 DecorationType::Range | DecorationType::WholeLine => {
                     // Render background highlights for range decorations
                     if let (Some(end_position), Some(background_color)) =
@@ -12607,7 +12611,7 @@ mod decoration_helpers {
         }
 
         #[test]
-        fn test_cursorless_hat_margin() {
+        fn test_negative_margin_parsing() {
             let (top, right, bottom, left) = parse_margin(Some("-9px -12px 0 0"));
             assert_eq!(top, px(-9.0));
             assert_eq!(right, px(-12.0));

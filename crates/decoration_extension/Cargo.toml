@@ -1,0 +1,20 @@
+[package]
+name = "decoration_extension"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/decoration_extension.rs"
+
+[dependencies]
+editor.workspace = true
+extension.workspace = true
+gpui.workspace = true
+multi_buffer.workspace = true
+text.workspace = true
+workspace.workspace = true
